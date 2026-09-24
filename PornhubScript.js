@@ -1,3 +1,11 @@
+function getHeaders() {
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-419,es;q=0.9,en;q=0.8"
+    };
+}
+
 function getSearchFilters() {
     return [
         {
@@ -26,51 +34,67 @@ function getSearchFilters() {
 }
 
 function search(query, type, order, filters) {
-    let url = `https://www.pornhub.com/video/search?search=${encodeURIComponent(query)}`;
-    if (filters) {
-        if (filters.duration) url += `&min_duration=${filters.duration}`;
-        if (filters.quality === "hd") url += `&hd=1`;
-    }
+    try {
+        let url = `https://www.pornhub.com/video/search?search=${encodeURIComponent(query)}`;
+        if (filters) {
+            if (filters.duration) url += `&min_duration=${filters.duration}`;
+            if (filters.quality === "hd") url += `&hd=1`;
+        }
 
-    const response = Http.get(url);
-    const dom = DOMParser.parse(response.body);
-    const videos = [];
-    
-    const nodes = dom.querySelectorAll(".pcVideoListItem");
-    for (const node of nodes) {
-        const a = node.querySelector("a");
-        if (!a) continue;
+        const response = Http.get(url, getHeaders());
+        if (!response.isOk) throw new Error(`Conexión rechazada. Código HTTP: ${response.code}`);
+
+        const dom = DOMParser.parse(response.body);
+        const videos = [];
         
-        const href = a.getAttribute("href");
-        if (!href.includes("viewkey=")) continue;
+        const nodes = dom.querySelectorAll(".pcVideoListItem");
+        if (!nodes || nodes.length === 0) throw new Error("DOM modificado. No se encontraron nodos de video.");
 
-        const title = node.querySelector(".title") ? node.querySelector(".title").text : "Sin título";
-        const img = node.querySelector("img");
-        const thumbUrl = img ? (img.getAttribute("data-thumb_url") || img.getAttribute("src")) : "";
-        const authorNode = node.querySelector(".usernameWrap a");
-        const authorName = authorNode ? authorNode.text : "Desconocido";
-        const authorUrl = authorNode ? `https://www.pornhub.com${authorNode.getAttribute("href")}` : "";
+        for (const node of nodes) {
+            const a = node.querySelector("a");
+            if (!a) continue;
+            
+            const href = a.getAttribute("href");
+            if (!href || !href.includes("viewkey=")) continue;
 
-        videos.push(new PlatformVideo({
-            id: href.split("viewkey=")[1],
-            name: title,
-            url: `https://www.pornhub.com${href}`,
-            thumbnails: new VideoThumbnails([new VideoThumbnail(thumbUrl)]),
-            author: new PlatformAuthorLink(authorUrl, authorName, authorUrl, null),
-            duration: 0, 
-            viewCount: 0,
-            isLive: false
-        }));
+            const titleNode = node.querySelector(".title");
+            const imgNode = node.querySelector("img");
+            let thumbUrl = "";
+            
+            if (imgNode) {
+                thumbUrl = imgNode.getAttribute("data-thumb_url") || imgNode.getAttribute("data-mediabook") || imgNode.getAttribute("src") || "";
+            }
+
+            const authorNode = node.querySelector(".usernameWrap a");
+
+            videos.push(new PlatformVideo({
+                id: href.split("viewkey=")[1],
+                name: titleNode ? titleNode.text : "Sin título",
+                url: `https://www.pornhub.com${href}`,
+                thumbnails: new VideoThumbnails([new VideoThumbnail(thumbUrl)]),
+                author: new PlatformAuthorLink(
+                    authorNode ? `https://www.pornhub.com${authorNode.getAttribute("href")}` : "", 
+                    authorNode ? authorNode.text : "Desconocido", 
+                    "", 
+                    null
+                ),
+                duration: 0, 
+                viewCount: 0,
+                isLive: false
+            }));
+        }
+        return new VideoListPager(videos, false);
+    } catch (e) {
+        return _renderError("Error de búsqueda: " + e.message);
     }
-    return new VideoListPager(videos, false);
 }
 
 function getVideoDetails(url) {
-    const response = Http.get(url);
+    const response = Http.get(url, getHeaders());
     const body = response.body;
     
     const flashvarsMatch = body.match(/var flashvars_[\d]+ = (\{.*?\});/);
-    if (!flashvarsMatch) throw new Error("Parámetros del reproductor no encontrados.");
+    if (!flashvarsMatch) throw new Error("Variables de reproducción no encontradas.");
     
     const config = JSON.parse(flashvarsMatch[1]);
     const videoSources = [];
@@ -111,49 +135,73 @@ function getVideoDetails(url) {
 }
 
 function getChannel(url) {
-    const response = Http.get(url);
+    const response = Http.get(url, getHeaders());
     const dom = DOMParser.parse(response.body);
     
     const nameNode = dom.querySelector("h1[itemprop='name']");
     const avatarNode = dom.querySelector("#getAvatar");
-    const bannerNode = dom.querySelector("#coverPictureDefault");
-    const descNode = dom.querySelector(".aboutMeText");
-
+    
     return new PlatformChannel({
         id: url,
         name: nameNode ? nameNode.text : "Canal",
         thumbnail: avatarNode ? avatarNode.getAttribute("src") : "",
-        banner: bannerNode ? bannerNode.getAttribute("src") : "",
+        banner: "",
         url: url,
-        description: descNode ? descNode.text : ""
+        description: ""
     });
 }
 
 function getChannelContents(url, page) {
-    let pagedUrl = url.includes("?") ? `${url}&page=${page}` : `${url}/videos?page=${page}`;
-    const response = Http.get(pagedUrl);
-    const dom = DOMParser.parse(response.body);
-    const videos = [];
-    
-    const nodes = dom.querySelectorAll(".pcVideoListItem");
-    for (const node of nodes) {
-        const a = node.querySelector("a");
-        if (!a) continue;
-        
-        const href = a.getAttribute("href");
-        if (!href.includes("viewkey=")) continue;
+    try {
+        let pagedUrl = url.includes("?") ? `${url}&page=${page}` : `${url}/videos?page=${page}`;
+        const response = Http.get(pagedUrl, getHeaders());
+        if (!response.isOk) throw new Error("Conexión rechazada en el canal.");
 
-        videos.push(new PlatformVideo({
-            id: href.split("viewkey=")[1],
-            name: node.querySelector(".title") ? node.querySelector(".title").text : "",
-            url: `https://www.pornhub.com${href}`,
-            thumbnails: new VideoThumbnails([new VideoThumbnail(node.querySelector("img") ? node.querySelector("img").getAttribute("src") : "")]),
-            author: new PlatformAuthorLink(url, "Canal", url, null),
+        const dom = DOMParser.parse(response.body);
+        const videos = [];
+        
+        const nodes = dom.querySelectorAll(".pcVideoListItem");
+        if (!nodes || nodes.length === 0) return new VideoListPager([], false);
+
+        for (const node of nodes) {
+            const a = node.querySelector("a");
+            if (!a) continue;
+            
+            const href = a.getAttribute("href");
+            if (!href || !href.includes("viewkey=")) continue;
+
+            const titleNode = node.querySelector(".title");
+            const imgNode = node.querySelector("img");
+            
+            videos.push(new PlatformVideo({
+                id: href.split("viewkey=")[1],
+                name: titleNode ? titleNode.text : "Video de canal",
+                url: `https://www.pornhub.com${href}`,
+                thumbnails: new VideoThumbnails([new VideoThumbnail(imgNode ? imgNode.getAttribute("src") : "")]),
+                author: new PlatformAuthorLink(url, "Canal", url, null),
+                duration: 0,
+                viewCount: 0,
+                isLive: false
+            }));
+        }
+        
+        return new VideoListPager(videos, nodes.length > 0);
+    } catch (e) {
+        return _renderError("Error en canal: " + e.message);
+    }
+}
+
+function _renderError(msg) {
+    return new VideoListPager([
+        new PlatformVideo({
+            id: "error_debug",
+            name: msg,
+            url: "https://localhost",
+            thumbnails: new VideoThumbnails([]),
+            author: new PlatformAuthorLink("", "Sistema", "", null),
             duration: 0,
             viewCount: 0,
             isLive: false
-        }));
-    }
-    
-    return new VideoListPager(videos, nodes.length > 0);
+        })
+    ], false);
 }
