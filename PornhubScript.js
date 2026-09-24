@@ -1,75 +1,85 @@
 const PORNHUB_BASE_URL = "https://www.pornhub.com";
 
 const BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "es-419,es;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": PORNHUB_BASE_URL + "/",
     "Cookie": "age_verified=1; accessAgeDisclaimerPH=1"
 };
 
-function getText(node, fallback) {
+function getNodeText(node, fallback) {
     if (!node) return fallback || "";
-
-    if (typeof node.textContent === "string") {
-        return node.textContent.trim();
-    }
 
     if (typeof node.text === "string") {
         return node.text.trim();
     }
 
+    if (typeof node.textContent === "string") {
+        return node.textContent.trim();
+    }
+
     return fallback || "";
 }
 
-function getAttribute(node, name, fallback) {
+function getNodeAttribute(node, attribute, fallback) {
     if (!node) return fallback || "";
 
-    const value = node.getAttribute(name);
+    const value = node.getAttribute(attribute);
     return value || fallback || "";
 }
 
-function normalizeUrl(href, baseUrl) {
-    if (!href) return "";
+function normalizeUrl(value) {
+    if (!value) return "";
 
-    const value = href.trim();
+    const url = String(value).trim();
 
-    if (value.startsWith("http://") || value.startsWith("https://")) {
-        return value;
+    if (url.indexOf("http://") === 0 ||
+        url.indexOf("https://") === 0) {
+        return url;
     }
 
-    if (value.startsWith("//")) {
-        return "https:" + value;
+    if (url.indexOf("//") === 0) {
+        return "https:" + url;
     }
 
-    if (value.startsWith("/")) {
-        return PORNHUB_BASE_URL + value;
+    if (url.indexOf("/") === 0) {
+        return PORNHUB_BASE_URL + url;
     }
 
-    if (baseUrl) {
-        const slashIndex = baseUrl.lastIndexOf("/");
-        return baseUrl.substring(0, slashIndex + 1) + value;
-    }
-
-    return PORNHUB_BASE_URL + "/" + value;
+    return PORNHUB_BASE_URL + "/" + url;
 }
 
 function getViewKey(url) {
     if (!url) return "";
 
-    const match = url.match(/[?&]viewkey=([^&#]+)/i);
+    const match = String(url).match(/[?&]viewkey=([^&#]+)/i);
     return match ? match[1] : "";
 }
 
 function isChannelUrl(url) {
     if (!url) return false;
 
-    return /\/(pornstar|model|channels?)\//i.test(url) ||
-           /\/user\/[^/]+/i.test(url);
+    const value = String(url).trim().toLowerCase();
+
+    return (
+        value.indexOf("pornhub.com/model/") >= 0 ||
+        value.indexOf("pornhub.com/pornstar/") >= 0 ||
+        value.indexOf("pornhub.com/channel/") >= 0 ||
+        value.indexOf("pornhub.com/channels/") >= 0 ||
+        value.indexOf("pornhub.com/user/") >= 0 ||
+        value.indexOf("/model/") >= 0 ||
+        value.indexOf("/pornstar/") >= 0 ||
+        value.indexOf("/channel/") >= 0 ||
+        value.indexOf("/channels/") >= 0 ||
+        value.indexOf("/user/") >= 0
+    );
 }
 
 function isContentDetailsUrl(url) {
-    return !!getViewKey(url);
+    if (!url) return false;
+
+    return /[?&]viewkey=[^&#]+/i.test(String(url));
 }
 
 function getSearchFilters() {
@@ -102,7 +112,7 @@ function getSearchFilters() {
 function createErrorVideo(message) {
     return new VideoListPager([
         new PlatformVideo({
-            id: "error_log",
+            id: "pornhub_error",
             name: "ERROR: " + message,
             url: PORNHUB_BASE_URL,
             thumbnails: new VideoThumbnails([]),
@@ -119,24 +129,22 @@ function createErrorVideo(message) {
     ], false);
 }
 
-function parseDuration(text) {
-    if (!text) return 0;
+function parseDuration(value) {
+    if (!value) return 0;
 
-    const cleanText = text.trim();
-    const parts = cleanText.split(":");
+    const parts = String(value)
+        .trim()
+        .split(":")
+        .map(function (part) {
+            return parseInt(part, 10) || 0;
+        });
 
-    const numbers = [];
-    for (const part of parts) {
-        const parsed = parseInt(part, 10);
-        numbers.push(isNaN(parsed) ? 0 : parsed);
+    if (parts.length === 2) {
+        return parts[0] * 60 + parts[1];
     }
 
-    if (numbers.length === 2) {
-        return numbers[0] * 60 + numbers[1];
-    }
-
-    if (numbers.length === 3) {
-        return numbers[0] * 3600 + numbers[1] * 60 + numbers[2];
+    if (parts.length === 3) {
+        return parts[0] * 3600 + parts[1] * 60 + parts[2];
     }
 
     return 0;
@@ -144,7 +152,7 @@ function parseDuration(text) {
 
 function extractVideosFromDom(dom) {
     const videos = [];
-    const knownIds = {};
+    const usedIds = {};
 
     const nodes = dom.querySelectorAll(
         "li.pcVideoListItem, " +
@@ -159,84 +167,82 @@ function extractVideosFromDom(dom) {
     }
 
     for (const node of nodes) {
-        const mainLink = node.querySelector(
-            "a[href*='viewkey='], " +
-            "a[href*='viewkey'], " +
-            "a[data-video-vkey]"
-        );
+        const links = node.querySelectorAll("a");
 
-        if (!mainLink) continue;
+        let videoLink = null;
+        let href = "";
 
-        let href = getAttribute(mainLink, "href", "");
+        for (const link of links) {
+            const candidate = getNodeAttribute(link, "href", "");
 
-        if (!href) {
-            const dataViewKey = getAttribute(mainLink, "data-video-vkey", "");
-            if (dataViewKey) {
-                href = "/view_video.php?viewkey=" + dataViewKey;
+            if (candidate &&
+                (candidate.indexOf("viewkey=") >= 0 ||
+                 candidate.indexOf("viewkey") >= 0)) {
+                videoLink = link;
+                href = candidate;
+                break;
             }
         }
 
-        if (!href) continue;
+        if (!videoLink || !href) continue;
 
         const videoUrl = normalizeUrl(href);
         const viewKey = getViewKey(videoUrl);
 
-        if (!viewKey || knownIds[viewKey]) continue;
+        if (!viewKey || usedIds[viewKey]) continue;
 
-        knownIds[viewKey] = true;
+        usedIds[viewKey] = true;
 
-        const titleNode = node.querySelector(
-            ".vidTitleWrapper .title a, " +
-            ".videoTitle a, " +
-            ".title a, " +
-            "[data-title], " +
-            "a[href*='viewkey=']"
+        const titleNode =
+            node.querySelector(".vidTitleWrapper .title a") ||
+            node.querySelector(".videoTitle a") ||
+            node.querySelector(".title a") ||
+            videoLink;
+
+        const title = getNodeText(titleNode, "Sin título");
+
+        const imageNode =
+            node.querySelector("img[data-mediumthumb]") ||
+            node.querySelector("img[data-thumb]") ||
+            node.querySelector("img[data-src]") ||
+            node.querySelector("img");
+
+        const thumbnail = normalizeUrl(
+            getNodeAttribute(imageNode, "data-mediumthumb", "") ||
+            getNodeAttribute(imageNode, "data-thumb", "") ||
+            getNodeAttribute(imageNode, "data-src", "") ||
+            getNodeAttribute(imageNode, "src", "")
         );
 
-        const title =
-            getAttribute(titleNode, "data-title", "") ||
-            getText(titleNode, "Sin título");
+        const authorNode =
+            node.querySelector(".usernameWrap a") ||
+            node.querySelector(".videoUploader a") ||
+            node.querySelector("a[href*='/model/']") ||
+            node.querySelector("a[href*='/pornstar/']") ||
+            node.querySelector("a[href*='/channel/']") ||
+            node.querySelector("a[href*='/user/']");
 
-        const imageNode = node.querySelector(
-            "img[data-mediumthumb], " +
-            "img[data-thumb], " +
-            "img[data-src], " +
-            "img[src]"
-        );
+        const authorName = getNodeText(authorNode, "Desconocido");
 
-        const thumbnailUrl = normalizeUrl(
-            getAttribute(imageNode, "data-mediumthumb", "") ||
-            getAttribute(imageNode, "data-thumb", "") ||
-            getAttribute(imageNode, "data-src", "") ||
-            getAttribute(imageNode, "src", "")
-        );
-
-        const authorNode = node.querySelector(
-            ".usernameWrap a, " +
-            ".videoUploader a, " +
-            "a[href*='/model/'], " +
-            "a[href*='/pornstar/'], " +
-            "a[href*='/channel/'], " +
-            "a[href*='/user/']"
-        );
-
-        const authorName = getText(authorNode, "Desconocido");
         const authorUrl = authorNode
-            ? normalizeUrl(getAttribute(authorNode, "href", ""))
+            ? normalizeUrl(getNodeAttribute(authorNode, "href", ""))
             : PORNHUB_BASE_URL + "/channels/";
 
-        const durationNode = node.querySelector(
-            ".duration, .videoDuration, .durationText"
-        );
+        const durationNode =
+            node.querySelector(".duration") ||
+            node.querySelector(".videoDuration") ||
+            node.querySelector(".durationText");
 
-        const duration = parseDuration(getText(durationNode, ""));
+        const duration = parseDuration(
+            getNodeText(durationNode, "")
+        );
 
         videos.push(new PlatformVideo({
             id: viewKey,
             name: title,
             url: videoUrl,
             thumbnails: new VideoThumbnails([
-                new VideoThumbnail(thumbnailUrl)
+                new VideoThumbnail(thumbnail)
             ]),
             author: new PlatformAuthorLink(
                 authorUrl,
@@ -262,7 +268,8 @@ function search(query, type, order, filters) {
 
         if (filters) {
             if (filters.duration) {
-                url += "&min_duration=" + encodeURIComponent(filters.duration);
+                url += "&min_duration=" +
+                    encodeURIComponent(filters.duration);
             }
 
             if (filters.quality === "hd") {
@@ -273,21 +280,33 @@ function search(query, type, order, filters) {
         const response = Http.get(url, BROWSER_HEADERS);
 
         if (!response || !response.isOk) {
-            throw new Error("HTTP " + (response ? response.code : "desconocido"));
+            throw new Error(
+                "HTTP " +
+                (response ? response.code : "desconocido")
+            );
+        }
+
+        if (!response.body || response.body.length < 500) {
+            throw new Error(
+                "PornHub devolvió una respuesta vacía o bloqueada."
+            );
         }
 
         const dom = DOMParser.parse(response.body);
         const videos = extractVideosFromDom(dom);
 
         if (videos.length === 0) {
-            return createErrorVideo(
-                "No se encontraron resultados o cambiaron los selectores de la página."
+            throw new Error(
+                "No se encontraron videos en los resultados."
             );
         }
 
         return new VideoListPager(videos, false);
     } catch (error) {
-        return createErrorVideo(error.message || String(error));
+        return createErrorVideo(
+            "Búsqueda: " +
+            (error.message || String(error))
+        );
     }
 }
 
@@ -296,58 +315,74 @@ function getChannel(url) {
         const response = Http.get(url, BROWSER_HEADERS);
 
         if (!response || !response.isOk) {
-            throw new Error("HTTP " + (response ? response.code : "desconocido"));
+            throw new Error(
+                "HTTP " +
+                (response ? response.code : "desconocido")
+            );
+        }
+
+        if (!response.body || response.body.length < 500) {
+            throw new Error(
+                "PornHub devolvió una respuesta vacía o bloqueada."
+            );
+        }
+
+        const body = response.body.toLowerCase();
+
+        if (
+            body.indexOf("captcha") >= 0 ||
+            body.indexOf("access denied") >= 0 ||
+            body.indexOf("verify you are human") >= 0 ||
+            body.indexOf("bot protection") >= 0
+        ) {
+            throw new Error(
+                "PornHub devolvió una página anti-bot."
+            );
         }
 
         const dom = DOMParser.parse(response.body);
 
-        const nameNode = dom.querySelector(
-            "h1[itemprop='name'], " +
-            "h1.name, " +
-            ".channelName, " +
-            ".profile-name, " +
-            "h1"
-        );
+        const nameNode =
+            dom.querySelector("h1[itemprop='name']") ||
+            dom.querySelector("h1.name") ||
+            dom.querySelector(".channelName") ||
+            dom.querySelector(".profile-name") ||
+            dom.querySelector("h1");
 
-        const avatarNode = dom.querySelector(
-            "#getAvatar img, " +
-            "#getAvatar, " +
-            ".avatar img, " +
-            ".profileAvatar img, " +
-            "img.avatar"
-        );
+        const avatarNode =
+            dom.querySelector("#getAvatar img") ||
+            dom.querySelector("#getAvatar") ||
+            dom.querySelector(".avatar img") ||
+            dom.querySelector(".profileAvatar img") ||
+            dom.querySelector("img.avatar");
 
-        const bannerNode = dom.querySelector(
-            "#coverPictureDefault img, " +
-            "#coverPictureDefault, " +
-            ".cover img, " +
-            ".banner img"
-        );
+        const bannerNode =
+            dom.querySelector("#coverPictureDefault img") ||
+            dom.querySelector("#coverPictureDefault") ||
+            dom.querySelector(".cover img") ||
+            dom.querySelector(".banner img");
 
-        const descriptionNode = dom.querySelector(
-            ".aboutMeText, " +
-            ".profile-description, " +
-            ".description, " +
-            ".bio"
-        );
+        const descriptionNode =
+            dom.querySelector(".aboutMeText") ||
+            dom.querySelector(".bio") ||
+            dom.querySelector(".description") ||
+            dom.querySelector(".profile-description");
 
-        const avatarUrl = normalizeUrl(
-            getAttribute(avatarNode, "src", "") ||
-            getAttribute(avatarNode, "data-src", "")
-        );
+        const avatar =
+            getNodeAttribute(avatarNode, "src", "") ||
+            getNodeAttribute(avatarNode, "data-src", "");
 
-        const bannerUrl = normalizeUrl(
-            getAttribute(bannerNode, "src", "") ||
-            getAttribute(bannerNode, "data-src", "")
-        );
+        const banner =
+            getNodeAttribute(bannerNode, "src", "") ||
+            getNodeAttribute(bannerNode, "data-src", "");
 
         return new PlatformChannel({
             id: url,
-            name: getText(nameNode, "Canal"),
-            thumbnail: avatarUrl,
-            banner: bannerUrl,
+            name: getNodeText(nameNode, "Canal"),
+            thumbnail: normalizeUrl(avatar),
+            banner: normalizeUrl(banner),
             url: url,
-            description: getText(descriptionNode, "")
+            description: getNodeText(descriptionNode, "")
         });
     } catch (error) {
         throw new Error(
@@ -360,19 +395,27 @@ function getChannel(url) {
 function getChannelContents(url, page) {
     try {
         const currentPage = page || 1;
-        let pagedUrl;
+        const separator = url.indexOf("?") >= 0 ? "&" : "?";
 
-        if (url.includes("?")) {
-            pagedUrl = url + "&page=" + currentPage;
-        } else {
-            pagedUrl = url.replace(/\/$/, "") +
-                "/videos?page=" + currentPage;
-        }
+        const pagedUrl =
+            url +
+            separator +
+            "page=" +
+            currentPage;
 
         const response = Http.get(pagedUrl, BROWSER_HEADERS);
 
         if (!response || !response.isOk) {
-            throw new Error("HTTP " + (response ? response.code : "desconocido"));
+            throw new Error(
+                "HTTP " +
+                (response ? response.code : "desconocido")
+            );
+        }
+
+        if (!response.body || response.body.length < 500) {
+            throw new Error(
+                "PornHub devolvió una respuesta vacía o bloqueada."
+            );
         }
 
         const dom = DOMParser.parse(response.body);
@@ -380,28 +423,34 @@ function getChannelContents(url, page) {
 
         if (videos.length === 0 && currentPage === 1) {
             return createErrorVideo(
-                "El canal no tiene videos o cambiaron los selectores."
+                "No se encontraron videos en el canal."
             );
         }
 
-        return new VideoListPager(videos, videos.length > 0);
+        return new VideoListPager(
+            videos,
+            videos.length > 0
+        );
     } catch (error) {
-        return createErrorVideo(error.message || String(error));
+        return createErrorVideo(
+            "Canal: " +
+            (error.message || String(error))
+        );
     }
 }
 
 function extractJsonObject(text, startIndex) {
     if (!text || startIndex < 0) return null;
 
-    let openingIndex = text.indexOf("{", startIndex);
+    const objectStart = text.indexOf("{", startIndex);
 
-    if (openingIndex < 0) return null;
+    if (objectStart < 0) return null;
 
     let depth = 0;
     let insideString = false;
     let escaped = false;
 
-    for (let i = openingIndex; i < text.length; i++) {
+    for (let i = objectStart; i < text.length; i++) {
         const character = text[i];
 
         if (insideString) {
@@ -427,7 +476,7 @@ function extractJsonObject(text, startIndex) {
             depth--;
 
             if (depth === 0) {
-                return text.substring(openingIndex, i + 1);
+                return text.substring(objectStart, i + 1);
             }
         }
     }
@@ -436,11 +485,12 @@ function extractJsonObject(text, startIndex) {
 }
 
 function parsePlayerConfig(body) {
+    if (!body) return {};
+
     const patterns = [
         /var\s+flashvars_\d+\s*=\s*/i,
         /var\s+flashvars\s*=\s*/i,
-        /flashvars_\d+\s*=\s*/i,
-        /"mediaDefinitions"\s*:/i
+        /flashvars_\d+\s*=\s*/i
     ];
 
     for (const pattern of patterns) {
@@ -448,14 +498,21 @@ function parsePlayerConfig(body) {
 
         if (!match) continue;
 
-        const jsonText = extractJsonObject(body, match.index);
+        const jsonText = extractJsonObject(
+            body,
+            match.index
+        );
 
         if (!jsonText) continue;
 
         try {
-            return JSON.parse(jsonText);
+            const config = JSON.parse(jsonText);
+
+            if (config && typeof config === "object") {
+                return config;
+            }
         } catch (error) {
-            // Se prueba el siguiente formato.
+            // Continúa con el siguiente formato.
         }
     }
 
@@ -477,23 +534,20 @@ function parsePlayerConfig(body) {
         /["']closedCaptionsFile["']\s*:\s*["']([^"']+)["']/i
     );
 
-    if (videoUrlMatch) config.video_url = videoUrlMatch[1];
-    if (videoTitleMatch) config.video_title = videoTitleMatch[1];
-    if (imageUrlMatch) config.image_url = imageUrlMatch[1];
-    if (captionsMatch) config.closedCaptionsFile = captionsMatch[1];
+    if (videoUrlMatch) {
+        config.video_url = videoUrlMatch[1];
+    }
 
-    const mediaDefinitionsMatch = body.match(
-        /["']mediaDefinitions["']\s*:\s*(\[[\s\S]*?\])\s*[,}]/i
-    );
+    if (videoTitleMatch) {
+        config.video_title = videoTitleMatch[1];
+    }
 
-    if (mediaDefinitionsMatch) {
-        try {
-            config.mediaDefinitions = JSON.parse(
-                mediaDefinitionsMatch[1]
-            );
-        } catch (error) {
-            // No se pudieron leer las fuentes.
-        }
+    if (imageUrlMatch) {
+        config.image_url = imageUrlMatch[1];
+    }
+
+    if (captionsMatch) {
+        config.closedCaptionsFile = captionsMatch[1];
     }
 
     return config;
@@ -509,16 +563,17 @@ function getVideoDetails(url) {
         );
     }
 
-    const config = parsePlayerConfig(response.body);
-
-    if (!config) {
+    if (!response.body || response.body.length < 500) {
         throw new Error(
-            "No se pudo encontrar la configuración del reproductor."
+            "PornHub devolvió una respuesta vacía o bloqueada."
         );
     }
 
+    const config = parsePlayerConfig(response.body);
     const videoSources = [];
-    const mediaDefinitions = config.mediaDefinitions || [];
+
+    const mediaDefinitions =
+        config.mediaDefinitions || [];
 
     for (const media of mediaDefinitions) {
         if (!media) continue;
@@ -531,10 +586,13 @@ function getVideoDetails(url) {
 
         if (!sourceUrl) continue;
 
-        const qualityValue = parseInt(
-            media.quality || media.height || 0,
-            10
-        );
+        const qualityValue =
+            parseInt(
+                media.quality ||
+                media.height ||
+                0,
+                10
+            ) || 0;
 
         videoSources.push(new VideoSource({
             url: sourceUrl,
@@ -543,11 +601,14 @@ function getVideoDetails(url) {
                 : "Auto",
             format: media.format || "mp4",
             width: parseInt(media.width || 0, 10) || 0,
-            height: qualityValue || 0
+            height: qualityValue
         }));
     }
 
-    if (videoSources.length === 0 && config.videoUrl) {
+    if (
+        videoSources.length === 0 &&
+        config.videoUrl
+    ) {
         videoSources.push(new VideoSource({
             url: config.videoUrl,
             quality: "Auto",
@@ -560,11 +621,12 @@ function getVideoDetails(url) {
     if (videoSources.length === 0) {
         throw new Error(
             "No se pudieron extraer fuentes de video. " +
-            "El reproductor puede haber cambiado."
+            "El reproductor pudo haber cambiado."
         );
     }
 
     const subtitles = [];
+
     const captionsUrl =
         config.closedCaptionsFile ||
         config.closed_captions ||
