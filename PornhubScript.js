@@ -117,6 +117,14 @@ function search(query, type, order, filters) {
     }
 }
 
+function isChannelUrl(url) {
+    if (!url) return false;
+    return url.includes("/pornstar/") || 
+           url.includes("/model/") || 
+           url.includes("/channels/") || 
+           url.includes("/users/");
+}
+
 function getChannel(url) {
     try {
         const response = Http.get(url, BROWSER_HEADERS);
