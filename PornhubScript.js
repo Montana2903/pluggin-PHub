@@ -13,6 +13,11 @@ function isChannelUrl(url) {
            url.includes("/user");
 }
 
+function isContentDetailsUrl(url) {
+    if (!url) return false;
+    return url.includes("viewkey=");
+}
+
 function getSearchFilters() {
     return [
         {
