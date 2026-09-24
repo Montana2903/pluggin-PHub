@@ -217,3 +217,7 @@ function getVideoDetails(url) {
         thumbnails: new VideoThumbnails([new VideoThumbnail(config.image_url)])
     });
 }
+
+function getHome() {
+    return new VideoListPager([], false);
+}
