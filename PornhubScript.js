@@ -5,6 +5,14 @@ const BROWSER_HEADERS = {
     "Cookie": "age_verified=1"
 };
 
+function isChannelUrl(url) {
+    if (!url) return false;
+    return url.includes("/pornstar/") || 
+           url.includes("/model/") || 
+           url.includes("/channel") || 
+           url.includes("/user");
+}
+
 function getSearchFilters() {
     return [
         {
@@ -68,7 +76,7 @@ function extractVideosFromDom(dom, baseUrl) {
         
         const authorNode = node.querySelector(".usernameWrap a");
         const authorName = authorNode ? authorNode.text.trim() : "Desconocido";
-        const authorUrl = authorNode ? `https://www.pornhub.com${authorNode.getAttribute("href")}` : "";
+        const authorUrl = authorNode ? `https://www.pornhub.com${authorNode.getAttribute("href")}` : "https://www.pornhub.com/channels/";
 
         let durationSeconds = 0;
         const durationNode = node.querySelector(".duration");
@@ -115,14 +123,6 @@ function search(query, type, order, filters) {
     } catch (error) {
         return createErrorVideo(error.message);
     }
-}
-
-function isChannelUrl(url) {
-    if (!url) return false;
-    return url.includes("/pornstar/") || 
-           url.includes("/model/") || 
-           url.includes("/channels/") || 
-           url.includes("/users/");
 }
 
 function getChannel(url) {
