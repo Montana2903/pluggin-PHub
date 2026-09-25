@@ -1,7 +1,6 @@
 const PORNHUB_BASE_URL = "https://www.pornhub.com";
 
 const BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "es-419,es;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": PORNHUB_BASE_URL + "/",
@@ -81,7 +80,7 @@ function errorPager(message) {
             id: "pornhub_error",
             name: "ERROR: " + message,
             url: PORNHUB_BASE_URL,
-            thumbnails: new VideoThumbnails([]),
+            thumbnails: [],
             author: new PlatformAuthorLink(PORNHUB_BASE_URL, "Diagnóstico", PORNHUB_BASE_URL, null),
             duration: 0,
             viewCount: 0,
@@ -148,7 +147,7 @@ function buildVideoFromNode(node) {
         id: id,
         name: getNodeText(titleNode, "Sin título"),
         url: url,
-        thumbnails: new VideoThumbnails([new VideoThumbnail(getImageUrl(imageNode))]),
+        thumbnails: [getImageUrl(imageNode)],
         author: new PlatformAuthorLink(authorUrl, getNodeText(authorNode, "Desconocido"), authorUrl, null),
         duration: parseDuration(getNodeText(durationNode, "0:00")),
         viewCount: parseNumberSuffix(getNodeText(viewsNode, "0")),
@@ -314,7 +313,7 @@ function getVideoDetailsPage(url) {
         subtitles: subtitles,
         author: new PlatformAuthorLink("", "Autor", "", null),
         description: config.description || "",
-        thumbnails: new VideoThumbnails([new VideoThumbnail(absoluteUrl(config.image_url || config.imageUrl || ""))])
+        thumbnails: [absoluteUrl(config.image_url || config.imageUrl || "")]
     });
 }
 
@@ -365,4 +364,4 @@ source.getSearchCapabilities = function () {
     };
 };
 
-log("PornHub Plugin v10 loaded");
+log("PornHub Plugin v12 loaded");
