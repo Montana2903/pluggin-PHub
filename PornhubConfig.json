@@ -6,8 +6,8 @@
     "platformUrl": "https://www.pornhub.com",
     "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
     "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub",
-    "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js?v=6",
-    "version": 6,
+    "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js?v=7",
+    "version": 7,
     "scriptPublicKey": "",
     "scriptSignature": "",
     "iconUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/icon.jpg",
@@ -17,9 +17,29 @@
         "DOMParser"
     ],
     "allowAllHttpHeaderAccess": true,
-    "allowEval": false,
     "allowUrls": [
         ".pornhub.com",
-        ".phncdn.com"
-    ]
+        ".phncdn.com",
+        "es.pornhub.com"
+    ],
+    "testing": {
+        "GetChannel": {
+            "urls": [
+                "https://www.pornhub.com/model/bonnie-blaze",
+                "https://www.pornhub.com/model/bellamurr",
+                "https://es.pornhub.com/model/bonnie-blaze"
+            ]
+        },
+        "GetChannelContents": {
+            "urls": [
+                "https://www.pornhub.com/model/bonnie-blaze",
+                "https://es.pornhub.com/model/bellamurr"
+            ]
+        },
+        "GetContentDetails": {
+            "urls": [
+                "https://es.pornhub.com/view_video.php?viewkey=6a77d4a89366c"
+            ]
+        }
+    }
 }
