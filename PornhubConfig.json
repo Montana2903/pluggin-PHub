@@ -6,8 +6,8 @@
   "platformUrl": "https://www.pornhub.com",
   "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
   "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub",
-  "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js?v=0",
-  "version": 0,
+  "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js?v=8",
+  "version": 8,
   "scriptPublicKey": "",
   "scriptSignature": "",
   "iconUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/icon.jpg",
@@ -22,23 +22,21 @@
     ".phncdn.com",
     "es.pornhub.com"
   ],
-  "supportedUrls": {
-    "channel": [
-      "https://www.pornhub.com/model/*",
-      "https://www.pornhub.com/pornstar/*",
-      "https://www.pornhub.com/channel/*",
-      "https://www.pornhub.com/channels/*",
-      "https://www.pornhub.com/user/*",
-      "https://es.pornhub.com/model/*",
-      "https://es.pornhub.com/pornstar/*",
-      "https://es.pornhub.com/channel/*",
-      "https://es.pornhub.com/user/*"
-    ],
-    "video": [
-      "https://www.pornhub.com/view_video.php?viewkey=*",
-      "https://es.pornhub.com/view_video.php?viewkey=*"
-    ]
-  },
+  "channelUrls": [
+    "https://www.pornhub.com/model/*",
+    "https://www.pornhub.com/pornstar/*",
+    "https://www.pornhub.com/channel/*",
+    "https://www.pornhub.com/channels/*",
+    "https://www.pornhub.com/user/*",
+    "https://es.pornhub.com/model/*",
+    "https://es.pornhub.com/pornstar/*",
+    "https://es.pornhub.com/channel/*",
+    "https://es.pornhub.com/user/*"
+  ],
+  "videoUrls": [
+    "https://www.pornhub.com/view_video.php?viewkey=*",
+    "https://es.pornhub.com/view_video.php?viewkey=*"
+  ],
   "testing": {
     "GetChannel": {
       "urls": [
