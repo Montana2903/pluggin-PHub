@@ -76,7 +76,7 @@ function parseNumberSuffix(value) {
 }
 
 function errorPager(message) {
-    return new VideoListPager([
+    return new VideoPager([
         new PlatformVideo({
             id: "pornhub_error",
             name: "ERROR: " + message,
@@ -91,7 +91,7 @@ function errorPager(message) {
 }
 
 function requestPage(url) {
-    var response = Http.get(url, BROWSER_HEADERS);
+    var response = http.GET(url, BROWSER_HEADERS);
     if (!response || !response.isOk) {
         throw new Error("HTTP " + (response ? response.code : "desconocido"));
     }
@@ -179,7 +179,7 @@ function getHomePage() {
     try {
         var doc = domParser.parseFromString(requestPage(PORNHUB_BASE_URL + "/video"), "text/html");
         var videos = extractVideosFromDom(doc);
-        return videos.length ? new VideoListPager(videos, false) : errorPager("No se encontraron videos en la página principal.");
+        return videos.length ? new VideoPager(videos, false) : errorPager("No se encontraron videos en la página principal.");
     } catch (e) {
         return errorPager("Home: " + (e.message || String(e)));
     }
@@ -195,7 +195,7 @@ function searchPage(query, filters) {
 
         var doc = domParser.parseFromString(requestPage(url), "text/html");
         var videos = extractVideosFromDom(doc);
-        return videos.length ? new VideoListPager(videos, false) : errorPager("No se encontraron videos en los resultados.");
+        return videos.length ? new VideoPager(videos, false) : errorPager("No se encontraron videos en los resultados.");
     } catch (e) {
         return errorPager("Búsqueda: " + (e.message || String(e)));
     }
@@ -228,7 +228,7 @@ function getChannelContentsPage(url, page) {
         var separator = url.indexOf("?") >= 0 ? "&" : "?";
         var doc = domParser.parseFromString(requestPage(url + separator + "page=" + currentPage), "text/html");
         var videos = extractVideosFromDom(doc);
-        return videos.length ? new VideoListPager(videos, true) : errorPager("No se encontraron videos en el canal.");
+        return videos.length ? new VideoPager(videos, true) : errorPager("No se encontraron videos en el canal.");
     } catch (e) {
         return errorPager("Canal: " + (e.message || String(e)));
     }
