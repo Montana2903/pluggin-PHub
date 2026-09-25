@@ -7,12 +7,13 @@
     "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
     "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub",
     "scriptUrl": "./PornhubScript.js",
-    "version": 13,
+    "version": 14,
     "scriptPublicKey": "",
     "scriptSignature": "",
-    "iconUrl": "./pornhub.png",
+    "iconUrl": "./icon.jpg",
     "id": "dce06efc-862e-11ee-b9d1-0242ac120002",
     "packages": [
+        "Http",
         "DOMParser"
     ],
     "allowAllHttpHeaderAccess": true,
