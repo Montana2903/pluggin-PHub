@@ -642,5 +642,27 @@ function getVideoDetails(url) {
 }
 
 function getHome() {
-    return new VideoListPager([], false);
+    try {
+        const url = PORNHUB_BASE_URL + "/video";
+        const response = Http.get(url, BROWSER_HEADERS);
+
+        if (!response || !response.isOk) {
+            return createErrorVideo("No se pudo cargar la página principal.");
+        }
+
+        if (!response.body || response.body.length < 500) {
+            return createErrorVideo("Página principal vacía o bloqueada.");
+        }
+
+        const dom = DOMParser.parse(response.body);
+        const videos = extractVideosFromDom(dom);
+
+        if (videos.length === 0) {
+            return createErrorVideo("No se encontraron videos en la página principal.");
+        }
+
+        return new VideoListPager(videos, false);
+    } catch (error) {
+        return createErrorVideo("Error al cargar home: " + (error.message || String(error)));
+    }
 }
