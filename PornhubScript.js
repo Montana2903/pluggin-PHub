@@ -34,16 +34,15 @@ function normalizeUrl(value) {
 
     const url = String(value).trim();
 
-    if (url.indexOf("http://") === 0 ||
-        url.indexOf("https://") === 0) {
+    if (/^https?:\/\//i.test(url)) {
         return url;
     }
 
-    if (url.indexOf("//") === 0) {
+    if (/^\/\//.test(url)) {
         return "https:" + url;
     }
 
-    if (url.indexOf("/") === 0) {
+    if (/^\//.test(url)) {
         return PORNHUB_BASE_URL + url;
     }
 
@@ -63,23 +62,20 @@ function isChannelUrl(url) {
     const value = String(url).trim().toLowerCase();
 
     return (
-        value.indexOf("pornhub.com/model/") >= 0 ||
-        value.indexOf("pornhub.com/pornstar/") >= 0 ||
-        value.indexOf("pornhub.com/channel/") >= 0 ||
-        value.indexOf("pornhub.com/channels/") >= 0 ||
-        value.indexOf("pornhub.com/user/") >= 0 ||
-        value.indexOf("/model/") >= 0 ||
-        value.indexOf("/pornstar/") >= 0 ||
-        value.indexOf("/channel/") >= 0 ||
-        value.indexOf("/channels/") >= 0 ||
-        value.indexOf("/user/") >= 0
+        /pornhub\.com\/(model|pornstar|channel|channels|user)\//i.test(value) ||
+        /\/(model|pornstar|channel|channels|user)\//i.test(value)
     );
 }
 
 function isContentDetailsUrl(url) {
     if (!url) return false;
 
-    return /[?&]viewkey=[^&#]+/i.test(String(url));
+    const value = String(url);
+
+    return (
+        /(?:^|[?&])viewkey=[^&#]+/i.test(value) ||
+        /\/view_video\.php/i.test(value)
+    );
 }
 
 function getSearchFilters() {
@@ -151,6 +147,8 @@ function parseDuration(value) {
 }
 
 function extractVideosFromDom(dom) {
+    if (!dom) return [];
+
     const videos = [];
     const usedIds = {};
 
@@ -159,7 +157,9 @@ function extractVideosFromDom(dom) {
         ".videoBox, " +
         ".video-item, " +
         ".videoPreview, " +
-        "[data-video-vkey]"
+        "[data-video-vkey], " +
+        ".video-card, " +
+        ".videoListingItem"
     );
 
     if (!nodes || nodes.length === 0) {
@@ -175,11 +175,16 @@ function extractVideosFromDom(dom) {
         for (const link of links) {
             const candidate = getNodeAttribute(link, "href", "");
 
-            if (candidate &&
-                (candidate.indexOf("viewkey=") >= 0 ||
-                 candidate.indexOf("viewkey") >= 0)) {
+            if (!candidate) continue;
+
+            const clean = String(candidate).trim();
+
+            if (
+                /(?:^|[?&])viewkey=/i.test(clean) ||
+                /\/view_video\.php/i.test(clean)
+            ) {
                 videoLink = link;
-                href = candidate;
+                href = clean;
                 break;
             }
         }
@@ -197,6 +202,7 @@ function extractVideosFromDom(dom) {
             node.querySelector(".vidTitleWrapper .title a") ||
             node.querySelector(".videoTitle a") ||
             node.querySelector(".title a") ||
+            node.querySelector("a[title]") ||
             videoLink;
 
         const title = getNodeText(titleNode, "Sin título");
@@ -223,7 +229,6 @@ function extractVideosFromDom(dom) {
             node.querySelector("a[href*='/user/']");
 
         const authorName = getNodeText(authorNode, "Desconocido");
-
         const authorUrl = authorNode
             ? normalizeUrl(getNodeAttribute(authorNode, "href", ""))
             : PORNHUB_BASE_URL + "/channels/";
@@ -231,11 +236,10 @@ function extractVideosFromDom(dom) {
         const durationNode =
             node.querySelector(".duration") ||
             node.querySelector(".videoDuration") ||
-            node.querySelector(".durationText");
+            node.querySelector(".durationText") ||
+            node.querySelector("[data-duration]");
 
-        const duration = parseDuration(
-            getNodeText(durationNode, "")
-        );
+        const duration = parseDuration(getNodeText(durationNode, ""));
 
         videos.push(new PlatformVideo({
             id: viewKey,
@@ -268,8 +272,7 @@ function search(query, type, order, filters) {
 
         if (filters) {
             if (filters.duration) {
-                url += "&min_duration=" +
-                    encodeURIComponent(filters.duration);
+                url += "&min_duration=" + encodeURIComponent(filters.duration);
             }
 
             if (filters.quality === "hd") {
@@ -280,51 +283,42 @@ function search(query, type, order, filters) {
         const response = Http.get(url, BROWSER_HEADERS);
 
         if (!response || !response.isOk) {
-            throw new Error(
-                "HTTP " +
-                (response ? response.code : "desconocido")
-            );
+            throw new Error("HTTP " + (response ? response.code : "desconocido"));
         }
 
         if (!response.body || response.body.length < 500) {
-            throw new Error(
-                "PornHub devolvió una respuesta vacía o bloqueada."
-            );
+            throw new Error("PornHub devolvió una respuesta vacía o bloqueada.");
         }
 
         const dom = DOMParser.parse(response.body);
         const videos = extractVideosFromDom(dom);
 
         if (videos.length === 0) {
-            throw new Error(
-                "No se encontraron videos en los resultados."
-            );
+            throw new Error("No se encontraron videos en los resultados.");
         }
 
         return new VideoListPager(videos, false);
     } catch (error) {
-        return createErrorVideo(
-            "Búsqueda: " +
-            (error.message || String(error))
-        );
+        return createErrorVideo("Búsqueda: " + (error.message || String(error)));
     }
 }
 
 function getChannel(url) {
     try {
-        const response = Http.get(url, BROWSER_HEADERS);
+        const finalUrl = String(url || "").trim();
+
+        if (!finalUrl) {
+            throw new Error("URL de canal vacía.");
+        }
+
+        const response = Http.get(finalUrl, BROWSER_HEADERS);
 
         if (!response || !response.isOk) {
-            throw new Error(
-                "HTTP " +
-                (response ? response.code : "desconocido")
-            );
+            throw new Error("HTTP " + (response ? response.code : "desconocido"));
         }
 
         if (!response.body || response.body.length < 500) {
-            throw new Error(
-                "PornHub devolvió una respuesta vacía o bloqueada."
-            );
+            throw new Error("PornHub devolvió una respuesta vacía o bloqueada.");
         }
 
         const body = response.body.toLowerCase();
@@ -335,9 +329,7 @@ function getChannel(url) {
             body.indexOf("verify you are human") >= 0 ||
             body.indexOf("bot protection") >= 0
         ) {
-            throw new Error(
-                "PornHub devolvió una página anti-bot."
-            );
+            throw new Error("PornHub devolvió una página anti-bot.");
         }
 
         const dom = DOMParser.parse(response.body);
@@ -354,7 +346,8 @@ function getChannel(url) {
             dom.querySelector("#getAvatar") ||
             dom.querySelector(".avatar img") ||
             dom.querySelector(".profileAvatar img") ||
-            dom.querySelector("img.avatar");
+            dom.querySelector("img.avatar") ||
+            dom.querySelector("img[alt*='profile']");
 
         const bannerNode =
             dom.querySelector("#coverPictureDefault img") ||
@@ -377,65 +370,50 @@ function getChannel(url) {
             getNodeAttribute(bannerNode, "data-src", "");
 
         return new PlatformChannel({
-            id: url,
+            id: finalUrl,
             name: getNodeText(nameNode, "Canal"),
             thumbnail: normalizeUrl(avatar),
             banner: normalizeUrl(banner),
-            url: url,
+            url: finalUrl,
             description: getNodeText(descriptionNode, "")
         });
     } catch (error) {
-        throw new Error(
-            "Fallo al cargar perfil: " +
-            (error.message || String(error))
-        );
+        throw new Error("Fallo al cargar perfil: " + (error.message || String(error)));
     }
 }
 
 function getChannelContents(url, page) {
     try {
-        const currentPage = page || 1;
-        const separator = url.indexOf("?") >= 0 ? "&" : "?";
+        const finalUrl = String(url || "").trim();
 
-        const pagedUrl =
-            url +
-            separator +
-            "page=" +
-            currentPage;
+        if (!finalUrl) {
+            return createErrorVideo("URL de canal vacía.");
+        }
+
+        const currentPage = page || 1;
+        const separator = finalUrl.indexOf("?") >= 0 ? "&" : "?";
+        const pagedUrl = finalUrl + separator + "page=" + currentPage;
 
         const response = Http.get(pagedUrl, BROWSER_HEADERS);
 
         if (!response || !response.isOk) {
-            throw new Error(
-                "HTTP " +
-                (response ? response.code : "desconocido")
-            );
+            throw new Error("HTTP " + (response ? response.code : "desconocido"));
         }
 
         if (!response.body || response.body.length < 500) {
-            throw new Error(
-                "PornHub devolvió una respuesta vacía o bloqueada."
-            );
+            throw new Error("PornHub devolvió una respuesta vacía o bloqueada.");
         }
 
         const dom = DOMParser.parse(response.body);
         const videos = extractVideosFromDom(dom);
 
         if (videos.length === 0 && currentPage === 1) {
-            return createErrorVideo(
-                "No se encontraron videos en el canal."
-            );
+            return createErrorVideo("No se encontraron videos en el canal.");
         }
 
-        return new VideoListPager(
-            videos,
-            videos.length > 0
-        );
+        return new VideoListPager(videos, videos.length > 0);
     } catch (error) {
-        return createErrorVideo(
-            "Canal: " +
-            (error.message || String(error))
-        );
+        return createErrorVideo("Canal: " + (error.message || String(error)));
     }
 }
 
@@ -498,10 +476,7 @@ function parsePlayerConfig(body) {
 
         if (!match) continue;
 
-        const jsonText = extractJsonObject(
-            body,
-            match.index
-        );
+        const jsonText = extractJsonObject(body, match.index);
 
         if (!jsonText) continue;
 
@@ -512,27 +487,16 @@ function parsePlayerConfig(body) {
                 return config;
             }
         } catch (error) {
-            // Continúa con el siguiente formato.
+            // sigue con el siguiente formato
         }
     }
 
     const config = {};
 
-    const videoUrlMatch = body.match(
-        /["']video_url["']\s*:\s*["']([^"']+)["']/i
-    );
-
-    const videoTitleMatch = body.match(
-        /["']video_title["']\s*:\s*["']([^"']*)["']/i
-    );
-
-    const imageUrlMatch = body.match(
-        /["']image_url["']\s*:\s*["']([^"']*)["']/i
-    );
-
-    const captionsMatch = body.match(
-        /["']closedCaptionsFile["']\s*:\s*["']([^"']+)["']/i
-    );
+    const videoUrlMatch = body.match(/["']video_url["']\s*:\s*["']([^"']+)["']/i);
+    const videoTitleMatch = body.match(/["']video_title["']\s*:\s*["']([^"']*)["']/i);
+    const imageUrlMatch = body.match(/["']image_url["']\s*:\s*["']([^"']*)["']/i);
+    const captionsMatch = body.match(/["']closedCaptionsFile["']\s*:\s*["']([^"']+)["']/i);
 
     if (videoUrlMatch) {
         config.video_url = videoUrlMatch[1];
@@ -554,121 +518,127 @@ function parsePlayerConfig(body) {
 }
 
 function getVideoDetails(url) {
-    const response = Http.get(url, BROWSER_HEADERS);
+    try {
+        const response = Http.get(url, BROWSER_HEADERS);
 
-    if (!response || !response.isOk) {
-        throw new Error(
-            "Error de red al obtener video: HTTP " +
-            (response ? response.code : "desconocido")
-        );
-    }
+        if (!response || !response.isOk) {
+            throw new Error("Error de red al obtener video: HTTP " + (response ? response.code : "desconocido"));
+        }
 
-    if (!response.body || response.body.length < 500) {
-        throw new Error(
-            "PornHub devolvió una respuesta vacía o bloqueada."
-        );
-    }
+        if (!response.body || response.body.length < 500) {
+            throw new Error("PornHub devolvió una respuesta vacía o bloqueada.");
+        }
 
-    const config = parsePlayerConfig(response.body);
-    const videoSources = [];
+        let config = parsePlayerConfig(response.body) || {};
+        const videoSources = [];
 
-    const mediaDefinitions =
-        config.mediaDefinitions || [];
+        if (!config || Object.keys(config).length === 0) {
+            const directVideo = response.body.match(/["']video_url["']\s*:\s*["']([^"']+)["']/i);
+            const directTitle = response.body.match(/["']video_title["']\s*:\s*["']([^"']*)["']/i);
+            const directImage = response.body.match(/["']image_url["']\s*:\s*["']([^"']*)["']/i);
 
-    for (const media of mediaDefinitions) {
-        if (!media) continue;
+            config = {
+                video_url: directVideo ? directVideo[1] : "",
+                video_title: directTitle ? directTitle[1] : "Video",
+                image_url: directImage ? directImage[1] : ""
+            };
+        }
 
-        const sourceUrl =
-            media.videoUrl ||
-            media.video_url ||
-            media.url ||
+        const mediaDefinitions = config.mediaDefinitions || [];
+        for (const media of mediaDefinitions) {
+            if (!media) continue;
+
+            const sourceUrl =
+                media.videoUrl ||
+                media.video_url ||
+                media.url ||
+                "";
+
+            if (!sourceUrl) continue;
+
+            const qualityValue =
+                parseInt(
+                    media.quality ||
+                    media.height ||
+                    0,
+                    10
+                ) || 0;
+
+            videoSources.push(new VideoSource({
+                url: sourceUrl,
+                quality: qualityValue > 0 ? qualityValue + "p" : "Auto",
+                format: media.format || "mp4",
+                width: parseInt(media.width || 0, 10) || 0,
+                height: qualityValue
+            }));
+        }
+
+        if (videoSources.length === 0 && config.videoUrl) {
+            videoSources.push(new VideoSource({
+                url: config.videoUrl,
+                quality: "Auto",
+                format: "mp4",
+                width: 0,
+                height: 0
+            }));
+        }
+
+        if (videoSources.length === 0 && config.video_url) {
+            videoSources.push(new VideoSource({
+                url: config.video_url,
+                quality: "Auto",
+                format: "mp4",
+                width: 0,
+                height: 0
+            }));
+        }
+
+        if (videoSources.length === 0) {
+            throw new Error("No se pudieron extraer fuentes de video. El reproductor pudo haber cambiado.");
+        }
+
+        const captionsUrl =
+            config.closedCaptionsFile ||
+            config.closed_captions ||
+            config.subtitleUrl ||
             "";
 
-        if (!sourceUrl) continue;
+        const subtitles = [];
 
-        const qualityValue =
-            parseInt(
-                media.quality ||
-                media.height ||
-                0,
-                10
-            ) || 0;
+        if (captionsUrl) {
+            subtitles.push(new SubtitleSource({
+                url: captionsUrl,
+                name: "Subtítulos",
+                format: "vtt"
+            }));
+        }
 
-        videoSources.push(new VideoSource({
-            url: sourceUrl,
-            quality: qualityValue > 0
-                ? qualityValue + "p"
-                : "Auto",
-            format: media.format || "mp4",
-            width: parseInt(media.width || 0, 10) || 0,
-            height: qualityValue
-        }));
+        const videoId =
+            config.video_id ||
+            config.video_url ||
+            getViewKey(url) ||
+            url;
+
+        const thumbnailUrl =
+            config.image_url ||
+            config.imageUrl ||
+            "";
+
+        return new VideoDetails({
+            id: videoId,
+            name: config.video_title || config.title || "Video",
+            url: url,
+            videoSources: videoSources,
+            subtitles: subtitles,
+            author: new PlatformAuthorLink("", "Autor", "", null),
+            description: config.description || "",
+            thumbnails: new VideoThumbnails([
+                new VideoThumbnail(thumbnailUrl)
+            ])
+        });
+    } catch (error) {
+        throw new Error("Fallo al cargar video: " + (error.message || String(error)));
     }
-
-    if (
-        videoSources.length === 0 &&
-        config.videoUrl
-    ) {
-        videoSources.push(new VideoSource({
-            url: config.videoUrl,
-            quality: "Auto",
-            format: "mp4",
-            width: 0,
-            height: 0
-        }));
-    }
-
-    if (videoSources.length === 0) {
-        throw new Error(
-            "No se pudieron extraer fuentes de video. " +
-            "El reproductor pudo haber cambiado."
-        );
-    }
-
-    const subtitles = [];
-
-    const captionsUrl =
-        config.closedCaptionsFile ||
-        config.closed_captions ||
-        config.subtitleUrl ||
-        "";
-
-    if (captionsUrl) {
-        subtitles.push(new SubtitleSource({
-            url: captionsUrl,
-            name: "Subtítulos",
-            format: "vtt"
-        }));
-    }
-
-    const videoId =
-        config.video_id ||
-        config.video_url ||
-        getViewKey(url) ||
-        url;
-
-    const thumbnailUrl =
-        config.image_url ||
-        config.imageUrl ||
-        "";
-
-    return new VideoDetails({
-        id: videoId,
-        name: config.video_title || config.title || "Video",
-        url: url,
-        videoSources: videoSources,
-        subtitles: subtitles,
-        author: new PlatformAuthorLink(
-            "",
-            "Autor",
-            "",
-            null
-        ),
-        description: config.description || "",
-        thumbnails: new VideoThumbnails([
-            new VideoThumbnail(thumbnailUrl)
-        ])
-    });
 }
 
 function getHome() {
