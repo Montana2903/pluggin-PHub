@@ -1,58 +1,24 @@
 {
-  "name": "PornHub",
-  "description": "Plugin de PornHub para Grayjay con búsqueda, canales, calidad y subtítulos.",
-  "author": "Tony",
-  "authorUrl": "",
-  "platformUrl": "https://www.pornhub.com",
-  "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
-  "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub",
-  "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js?v=8",
-  "version": 8,
-  "scriptPublicKey": "",
-  "scriptSignature": "",
-  "iconUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/icon.jpg",
-  "id": "dce06efc-862e-11ee-b9d1-0242ac120002",
-  "packages": [
-    "Http",
-    "DOMParser"
-  ],
-  "allowAllHttpHeaderAccess": true,
-  "allowUrls": [
-    ".pornhub.com",
-    ".phncdn.com",
-    "es.pornhub.com"
-  ],
-  "channelUrls": [
-    "https://www.pornhub.com/model/*",
-    "https://www.pornhub.com/pornstar/*",
-    "https://www.pornhub.com/channel/*",
-    "https://www.pornhub.com/channels/*",
-    "https://www.pornhub.com/user/*",
-    "https://es.pornhub.com/model/*",
-    "https://es.pornhub.com/pornstar/*",
-    "https://es.pornhub.com/channel/*",
-    "https://es.pornhub.com/user/*"
-  ],
-  "videoUrls": [
-    "https://www.pornhub.com/view_video.php?viewkey=*",
-    "https://es.pornhub.com/view_video.php?viewkey=*"
-  ],
-  "testing": {
-    "GetChannel": {
-      "urls": [
-        "https://www.pornhub.com/model/bonnie-blaze",
-        "https://www.pornhub.com/model/bellamurr"
-      ]
-    },
-    "GetChannelContents": {
-      "urls": [
-        "https://www.pornhub.com/model/bonnie-blaze"
-      ]
-    },
-    "GetContentDetails": {
-      "urls": [
-        "https://es.pornhub.com/view_video.php?viewkey=6a77d4a89366c"
-      ]
-    }
-  }
+    "name": "PornHub",
+    "description": "Plugin de PornHub para Grayjay con búsqueda, canales, calidad y subtítulos.",
+    "author": "Tony",
+    "authorUrl": "",
+    "platformUrl": "https://www.pornhub.com",
+    "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
+    "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub",
+    "scriptUrl": "./PornhubScript.js",
+    "version": 9,
+    "scriptPublicKey": "",
+    "scriptSignature": "",
+    "iconUrl": "./icon.jpg",
+    "id": "dce06efc-862e-11ee-b9d1-0242ac120002",
+    "packages": [
+        "Http",
+        "DOMParser"
+    ],
+    "allowAllHttpHeaderAccess": true,
+    "allowUrls": [
+        ".pornhub.com",
+        ".phncdn.com"
+    ]
 }
