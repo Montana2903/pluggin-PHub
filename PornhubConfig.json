@@ -1,22 +1,25 @@
 {
-  "name": "PornHub",
-  "description": "Plugin de PornHub para Grayjay con búsqueda, canales, calidad y subtítulos.",
-  "author": "Tony",
-  "authorUrl": "",
-  "platformUrl": "https://www.pornhub.com",
-  "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
-  "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub/",
-  "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js",
-  "version": 5,
-  "scriptPublicKey": "",
-  "scriptSignature": "",
-  "iconUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/icon.jpg",
-  "id": "dce06efc-862e-11ee-b9d1-0242ac120002",
-  "packages": ["Http", "DOMParser"],
-  "allowAllHttpHeaderAccess": true,
-  "allowEval": false,
-  "allowUrls": [
-    ".pornhub.com",
-    ".phncdn.com"
-  ]
+    "name": "PornHub",
+    "description": "Plugin de PornHub para Grayjay con búsqueda, canales, calidad y subtítulos.",
+    "author": "Tony",
+    "authorUrl": "",
+    "platformUrl": "https://www.pornhub.com",
+    "sourceUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubConfig.json",
+    "repositoryUrl": "https://github.com/Montana2903/pluggin-PHub",
+    "scriptUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/PornhubScript.js?v=6",
+    "version": 6,
+    "scriptPublicKey": "",
+    "scriptSignature": "",
+    "iconUrl": "https://raw.githubusercontent.com/Montana2903/pluggin-PHub/main/icon.jpg",
+    "id": "dce06efc-862e-11ee-b9d1-0242ac120002",
+    "packages": [
+        "Http",
+        "DOMParser"
+    ],
+    "allowAllHttpHeaderAccess": true,
+    "allowEval": false,
+    "allowUrls": [
+        ".pornhub.com",
+        ".phncdn.com"
+    ]
 }
