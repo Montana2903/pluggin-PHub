@@ -126,7 +126,6 @@ source.searchSuggestions = function(query) {
 	}
 };
 
-// Filtros funcionales integrados
 source.getSearchCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed],
@@ -334,7 +333,6 @@ source.getContentDetails = function (url) {
 	var mediaDefinitions = page.definitions;
 	var sources = [];
 
-	// Integración Híbrida: Extracción manual MP4 + Automática HLS
 	for (const def of mediaDefinitions) {
 		var resolution = supportedResolutions[def.quality];
 		if (!resolution) continue;
@@ -360,7 +358,6 @@ source.getContentDetails = function (url) {
 		}
 	}
 
-	// Restauración de subtítulos
 	var subtitles = [];
 	if (flashvars.closedCaptionsFile) {
 		subtitles.push(new SubtitleSource({
@@ -777,12 +774,22 @@ function getChannelInfo(url) {
 	var channelBanner = bannerElement ? bannerElement.getAttribute("src") : "";
 	const nameElement = dom.querySelector("h1");
 	var channelName = nameElement ? nameElement.textContent.trim() : "";
+	
 	var statsNode = dom.getElementById("stats");
-	var channelSubscribers = (statsNode && statsNode.childNodes[1]) ? parseInt(statsNode.childNodes[1].textContent.trim().replace(/,/g, '')) : 0;
-	var channelViews = (statsNode && statsNode.childNodes[0]) ? parseInt(statsNode.childNodes[0].textContent.trim().replace(/,/g, '')) : 0;
-	var channelVideos = (statsNode && statsNode.childNodes[2]) ? parseInt(statsNode.childNodes[2].textContent.trim().split(" ")[0].replace(/,/g, '')) : 0;
+	var channelSubscribers = 0;
+	var channelViews = 0;
+	var channelVideos = 0;
+	if (statsNode) {
+		var subsNode = statsNode.childNodes[1];
+		if (subsNode && subsNode.textContent) channelSubscribers = parseInt(subsNode.textContent.trim().replace(/,/g, '')) || 0;
+		var viewsNode = statsNode.childNodes[0];
+		if (viewsNode && viewsNode.textContent) channelViews = parseInt(viewsNode.textContent.trim().replace(/,/g, '')) || 0;
+		var vidsNode = statsNode.childNodes[2];
+		if (vidsNode && vidsNode.textContent) channelVideos = parseInt(vidsNode.textContent.trim().split(" ")[0].replace(/,/g, '')) || 0;
+	}
+
 	const descElement = dom.querySelector(".cdescriptions");
-	var channelDescription = (descElement && descElement.childNodes[0]) ? descElement.childNodes[0].textContent.trim() : "";
+	var channelDescription = (descElement && descElement.childNodes[0] && descElement.childNodes[0].textContent) ? descElement.childNodes[0].textContent.trim() : "";
 	if (channelViews > 0 || channelVideos > 0 || channelSubscribers > 0) {
 		channelDescription += "\n\n📊 Channel Stats:";
 		if (channelVideos > 0) channelDescription += "\n• Total Videos: " + channelVideos.toLocaleString();
@@ -814,28 +821,38 @@ function getPornstarInfo(url) {
 	const channelThumbnail = avatarElement ? avatarElement.getAttribute("src") : "";
 	const bannerElement = dom.getElementById("coverPictureDefault");
 	const channelBanner = bannerElement ? bannerElement.getAttribute("src") : "";
-	const nameElement = dom.querySelector("div.name > h1");
+	const nameElement = dom.querySelector("div.name > h1, h1[itemprop=name], h1");
 	const channelName = nameElement ? nameElement.textContent.trim() : "";
+	
 	var channelDescription = "";
 	const aboutSection = dom.querySelector("section.aboutMeSection");
 	if (aboutSection) {
 		var divs = aboutSection.querySelectorAll("div");
 		for (var i = 0; i < divs.length; i++) {
-			if (!divs[i].getAttribute("class")) {
-				channelDescription = divs[i].textContent;
+			if (!divs[i].getAttribute("class") && divs[i].textContent) {
+				channelDescription = divs[i].textContent.trim();
 				break;
 			}
 		}
 	}
+	
+	var channelSubscribers = 0;
+	var channelViews = 0;
 	const statsNode = dom.querySelector("div.infoBoxes");
-	const channelSubscribers = statsNode ? parseNumberSuffix(statsNode.querySelector("div[data-title^=Subscribers] > span.big").textContent.trim()) : 0;
-	const channelViews = statsNode ? parseNumberSuffix(statsNode.querySelector("div[data-title^=Video] > span.big").textContent.trim()) : 0;
+	if (statsNode) {
+		const subsEl = statsNode.querySelector("div[data-title^=Subscribers] > span.big");
+		if (subsEl && subsEl.textContent) channelSubscribers = parseNumberSuffix(subsEl.textContent.trim());
+		const viewsEl = statsNode.querySelector("div[data-title^=Video] > span.big");
+		if (viewsEl && viewsEl.textContent) channelViews = parseNumberSuffix(viewsEl.textContent.trim());
+	}
+	
 	var channelVideos = 0;
 	const videoCountElement = dom.querySelector("div.pornstarVideosCounter span.big, div.videosCounter span");
-	if (videoCountElement) {
+	if (videoCountElement && videoCountElement.textContent) {
 		const videoCountText = videoCountElement.textContent.trim();
 		channelVideos = videoCountText.includes("K") || videoCountText.includes("M") ? parseNumberSuffix(videoCountText) : parseInt(videoCountText.replace(/,/g, '')) || 0;
 	}
+	
 	if (channelViews > 0 || channelVideos > 0 || channelSubscribers > 0) {
 		channelDescription += "\n\n📊 Channel Stats:";
 		if (channelVideos > 0) channelDescription += "\n• Total Videos: " + channelVideos.toLocaleString();
@@ -1424,4 +1441,4 @@ function parseDuration(durationStr) {
 	return 60 * mins + secs;
 }
 
-log("Pornhub Refactored Loaded - No Auth");
+log("Pornhub Final Refactored Loaded");
