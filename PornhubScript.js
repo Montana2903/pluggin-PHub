@@ -303,25 +303,34 @@ function playbackHeaders(url) {
 
 function loadPlaybackPage(url) {
 	let lastCode = null;
-	for (let attempt = 0; attempt < 3; attempt++) {
+	for (let attempt = 0; attempt < 5; attempt++) {
 		const pageUrl = attempt === 0 ? url : url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + attempt;
 		const html = httpGET(pageUrl, {});
 		const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
-		if (!match) throw new ScriptException("The video player is not available on this page.");
+		if (!match) {
+			if (attempt < 4) { bridge.sleep(1500); continue; }
+			throw new ScriptException("The video player is not available on this page.");
+		}
 		const flashvars = JSON.parse(match[1]);
 		
 		const definitions = (flashvars.mediaDefinitions || []).filter(definition =>
 			typeof definition.quality !== "object" && supportedResolutions[definition.quality] &&
 			typeof definition.videoUrl === "string" && definition.videoUrl.startsWith("https://"));
 			
-		if (!definitions.length) throw new ScriptException("The video has no supported playback streams.");
+		if (!definitions.length) {
+			if (attempt < 4) { bridge.sleep(1500); continue; }
+			throw new ScriptException("The video has no supported playback streams.");
+		}
 		
 		const hlsProbe = definitions.find(d => d.format === "hls" && d.defaultQuality) || definitions.find(d => d.format === "hls") || definitions[0];
+		
 		const response = http.GET(hlsProbe.videoUrl, playbackHeaders(url));
 		if (response.isOk) return { html, flashvars, definitions };
 		
 		lastCode = response.code;
-		if (![403, 404, 410].includes(lastCode)) break;
+		log("Sonda CDN rechazada con código HTTP: " + lastCode + ". Reintentando...");
+		
+		bridge.sleep(2000);
 	}
 	throw new ScriptException("The streaming server could not provide a valid playlist (HTTP " + lastCode + "). Please try again.");
 }
@@ -1441,4 +1450,4 @@ function parseDuration(durationStr) {
 	return 60 * mins + secs;
 }
 
-log("Pornhub Final Refactored Loaded");
+log("Pornhub Full Final Script Loaded");
