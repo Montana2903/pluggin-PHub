@@ -43,10 +43,21 @@ function selectedFilterValue(filters, id) {
 
 function imageUrl(element) {
 	if (!element) return "";
-	const attributes = ["data-src", "data-thumb_url", "data-mediumthumb", "data-image", "data-path", "src"];
+	const attributes = [
+		"data-src", 
+		"data-thumb_url", 
+		"data-mediumthumb", 
+		"data-image", 
+		"data-thumb",
+		"data-poster",
+		"data-path", 
+		"src"
+	];
+	
 	for (const attribute of attributes) {
 		let value = element.getAttribute(attribute);
-		if (!value || value.startsWith("data:image/")) continue;
+		if (!value || value.startsWith("data:image/") || value.includes("1x1.gif") || value.includes("blank.gif")) continue;
+		
 		value = value.replace(/&amp;/g, "&");
 		if (value.startsWith("//")) return "https:" + value;
 		if (value.startsWith("/")) return URL_BASE + value;
@@ -1056,9 +1067,15 @@ function getChannelVideosPager(path, params, page) {
 			const aElement = li.querySelector('a.js-linkVideoThumb');
 			if (aElement) {
 				const videoUrl = aElement.getAttribute('href');
-				const imgElement = aElement.querySelector('img');
+				const imgElement = aElement.querySelector('img') || li.querySelector('img');
 				if (imgElement && videoUrl) {
-					const thumbnailUrl = imageUrl(imgElement);
+					let thumbnailUrl = imageUrl(imgElement);
+					if (!thumbnailUrl || thumbnailUrl.length < 5) {
+						let parentBg = li.querySelector('.phimage') || li;
+						let bgStyle = parentBg.getAttribute("style") || "";
+						let bgMatch = bgStyle.match(/url\(['"]?(.*?)['"]?\)/);
+						if (bgMatch) thumbnailUrl = absolutePlatformUrl(bgMatch[1]);
+					}
 					const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
 					const durationVar = aElement.querySelector(".duration");
 					const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
@@ -1101,9 +1118,15 @@ function getModelVideosPager(path, params, page) {
 				const aElement = li.querySelector('a.js-linkVideoThumb');
 				if (aElement) {
 					const videoUrl = aElement.getAttribute('href');
-					const imgElement = aElement.querySelector('img');
+					const imgElement = aElement.querySelector('img') || li.querySelector('img');
 					if (imgElement && videoUrl) {
-						const thumbnailUrl = imageUrl(imgElement);
+						let thumbnailUrl = imageUrl(imgElement);
+						if (!thumbnailUrl || thumbnailUrl.length < 5) {
+							let parentBg = li.querySelector('.phimage') || li;
+							let bgStyle = parentBg.getAttribute("style") || "";
+							let bgMatch = bgStyle.match(/url\(['"]?(.*?)['"]?\)/);
+							if (bgMatch) thumbnailUrl = absolutePlatformUrl(bgMatch[1]);
+						}
 						const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
 						const durationVar = aElement.querySelector(".duration");
 						const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
@@ -1150,9 +1173,15 @@ function getPornstarVideosPager(path, params, page) {
 				const aElement = li.querySelector('a.js-linkVideoThumb');
 				if (aElement) {
 					const videoUrl = aElement.getAttribute('href');
-					const imgElement = aElement.querySelector('img');
+					const imgElement = aElement.querySelector('img') || li.querySelector('img');
 					if (imgElement && videoUrl) {
-						const thumbnailUrl = imageUrl(imgElement);
+						let thumbnailUrl = imageUrl(imgElement);
+						if (!thumbnailUrl || thumbnailUrl.length < 5) {
+							let parentBg = li.querySelector('.phimage') || li;
+							let bgStyle = parentBg.getAttribute("style") || "";
+							let bgMatch = bgStyle.match(/url\(['"]?(.*?)['"]?\)/);
+							if (bgMatch) thumbnailUrl = absolutePlatformUrl(bgMatch[1]);
+						}
 						const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
 						const durationVar = aElement.querySelector(".duration");
 						const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
@@ -1342,9 +1371,15 @@ function getVideos(html, ulId) {
                 const aElement = li.querySelector('a.js-linkVideoThumb');
                 if (aElement) {
                     const videoUrl = URL_BASE + aElement.getAttribute('href');
-                    const imgElement = aElement.querySelector('img');
+                    const imgElement = aElement.querySelector('img') || li.querySelector('img');
                     if (imgElement) {
-						const thumbnailUrl = imageUrl(imgElement);
+						let thumbnailUrl = imageUrl(imgElement);
+						if (!thumbnailUrl || thumbnailUrl.length < 5) {
+							let parentBg = li.querySelector('.phimage') || li;
+							let bgStyle = parentBg.getAttribute("style") || "";
+							let bgMatch = bgStyle.match(/url\(['"]?(.*?)['"]?\)/);
+							if (bgMatch) thumbnailUrl = absolutePlatformUrl(bgMatch[1]);
+						}
                         const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
                         const durationVar = aElement.querySelector(".duration");
                         const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
@@ -1450,4 +1485,4 @@ function parseDuration(durationStr) {
 	return 60 * mins + secs;
 }
 
-log("Pornhub Full Final Script Loaded");
+log("Pornhub Full Final Script Loaded v3");
