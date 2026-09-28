@@ -309,7 +309,12 @@ const supportedResolutions = {
 };
 
 function playbackHeaders(url) {
-	return { "Referer": url, "User-Agent": headers["User-Agent"], "Origin": URL_BASE };
+	return { 
+		"Referer": url, 
+		"User-Agent": headers["User-Agent"], 
+		"Origin": URL_BASE,
+		"Cookie": headers["Cookie"]
+	};
 }
 
 function loadPlaybackPage(url) {
@@ -357,12 +362,14 @@ source.getContentDetails = function (url) {
 		var resolution = supportedResolutions[def.quality];
 		if (!resolution) continue;
 		
+		let isDefault = def.defaultQuality === true;
+		
 		if (def.format === "hls") {
 			sources.push(new HLSSource({
 				name: `${resolution.width}x${resolution.height} (Auto)`,
 				url: def.videoUrl,
 				duration: flashvars.video_duration ?? 0,
-				priority: def.defaultQuality === true,
+				priority: isDefault,
 				requestModifier: { headers: playbackHeaders(url) }
 			}));
 		} else if (def.format === "mp4") {
@@ -373,6 +380,7 @@ source.getContentDetails = function (url) {
 				height: resolution.height,
 				duration: flashvars.video_duration ?? 0,
 				container: "mp4",
+				priority: isDefault,
 				requestModifier: { headers: playbackHeaders(url) }
 			}));
 		}
@@ -1485,4 +1493,4 @@ function parseDuration(durationStr) {
 	return 60 * mins + secs;
 }
 
-log("Pornhub Full Final Script Loaded v3");
+log("Pornhub Final Script v4 Loaded");
