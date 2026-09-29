@@ -1,7 +1,5 @@
 const URL_BASE = "https://www.pornhub.com";
-
 const PLATFORM_CLAIMTYPE = 3;
-
 const PLATFORM = "PornHub";
 
 var config = {};
@@ -87,6 +85,26 @@ function interactionCountFromLdJson(ldJson) {
 	return parseInteractionCount(statistic ? statistic.userInteractionCount : 0);
 }
 
+function parseStringWithKorMSuffixes(subscriberString) {
+    if (!subscriberString) return 0;
+    const numericPart = parseFloat(subscriberString.replace(/,/g, ''));
+    if (subscriberString.toUpperCase().includes("K")) return Math.floor(numericPart * 1000);
+    else if (subscriberString.toUpperCase().includes("M")) return Math.floor(numericPart * 1000000);
+    else return Math.floor(numericPart);
+}
+
+function parseNumberSuffix(str) {
+    return parseStringWithKorMSuffixes(str);
+}
+
+function parseDuration(durationStr) {
+    if (!durationStr) return 0;
+    const parts = durationStr.split(':').map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0] || 0;
+}
+
 source.enable = function (conf, settings, savedStateStr) {
 	config = conf ?? {};
 	if (savedStateStr) {
@@ -103,8 +121,28 @@ source.saveState = function() {
 	return JSON.stringify(state);
 };
 
-source.getHome = function () {
-	return getVideoPager('/video', {}, 1);
+source.getHomeCapabilities = function() {
+    return {
+        types: [Type.Feed.Mixed],
+        sorts: [Type.Order.Chronological],
+        filters: [
+            { id: "category", type: "DropdownFilter", name: "Categoría", isMultiSelect: false, options: [
+                { id: "", name: "Inicio" },
+                { id: "ht", name: "Hot" },
+                { id: "mv", name: "Más Vistos" },
+                { id: "tr", name: "Mejor Valorados" }
+            ], defaultOption: "" }
+        ]
+    };
+};
+
+source.getHome = function (type, filters) {
+    var params = {};
+    if (filters) {
+        var cat = selectedFilterValue(filters, "category");
+        if (cat) params.o = cat;
+    }
+	return getVideoPager('/video', params, 1);
 };
 
 source.searchSuggestions = function(query) {
@@ -140,15 +178,15 @@ source.searchSuggestions = function(query) {
 source.getSearchCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed],
-		sorts: [Type.Order.Chronological],
+		sorts: [Type.Order.Chronological, Type.Order.Views, Type.Order.Rating],
 		filters: [
-			{ id: "duration", type: "DropdownFilter", name: "Duración", options: [
+			{ id: "duration", type: "DropdownFilter", name: "Duración", isMultiSelect: false, options: [
 				{ id: "", name: "Cualquiera" },
 				{ id: "10", name: "Hasta 10 minutos" },
 				{ id: "20", name: "Hasta 20 minutos" },
 				{ id: "30", name: "Más de 20 minutos" }
 			], defaultOption: "" },
-			{ id: "quality", type: "DropdownFilter", name: "Calidad", options: [
+			{ id: "quality", type: "DropdownFilter", name: "Calidad", isMultiSelect: false, options: [
 				{ id: "", name: "Todas" },
 				{ id: "hd", name: "HD" }
 			], defaultOption: "" }
@@ -164,6 +202,10 @@ source.search = function (query, type, order, filters) {
 	const quality = selectedFilterValue(filters, "quality");
 	if (quality === "hd") params.hd = "1";
 	
+    if (order === Type.Order.Chronological) params.o = "mr";
+    else if (order === Type.Order.Views) params.o = "mv";
+    else if (order === Type.Order.Rating) params.o = "tr";
+
 	return getVideoPager(query ? "/video/search" : "/video", params, 1);
 };
 
@@ -188,7 +230,7 @@ source.isChannelUrl = function (url) {
 source.getChannel = function (url) {
 	if (!url.startsWith("htt")) url = URL_BASE + url;
 	url = normalizePornhubUrl(url);
-	var channelUrlName = url.split("/")[4]
+	var channelUrlName = url.split("/")[4];
 	var info = url.includes("/channels/") ? getChannelInfo(url) : getPornstarInfo(url);
     return new PlatformChannel({
         id: new PlatformID(PLATFORM, channelUrlName, config.id, PLATFORM_CLAIMTYPE),
@@ -338,7 +380,9 @@ function loadPlaybackPage(url) {
 			throw new ScriptException("The video has no supported playback streams.");
 		}
 		
-		const hlsProbe = definitions.find(d => d.format === "hls" && d.defaultQuality) || definitions.find(d => d.format === "hls") || definitions[0];
+		const hlsProbe = definitions.find(d => d.format === "hls" && d.quality === "1080") || 
+						 definitions.find(d => d.format === "hls" && d.defaultQuality) || 
+						 definitions.find(d => d.format === "hls") || definitions[0];
 		
 		const response = http.GET(hlsProbe.videoUrl, playbackHeaders(url));
 		if (response.isOk) return { html, flashvars, definitions };
@@ -358,11 +402,15 @@ source.getContentDetails = function (url) {
 	var mediaDefinitions = page.definitions;
 	var sources = [];
 
+	let has1080 = mediaDefinitions.some(d => d.quality === "1080");
+	let has720 = mediaDefinitions.some(d => d.quality === "720");
+	let forcedDefault = has1080 ? "1080" : (has720 ? "720" : null);
+
 	for (const def of mediaDefinitions) {
 		var resolution = supportedResolutions[def.quality];
 		if (!resolution) continue;
 		
-		let isDefault = def.defaultQuality === true;
+		let isDefault = forcedDefault ? (def.quality === forcedDefault) : (def.defaultQuality === true);
 		
 		if (def.format === "hls") {
 			sources.push(new HLSSource({
@@ -417,6 +465,13 @@ source.getContentDetails = function (url) {
 	var views = interactionCountFromLdJson(ldJson);
 	var videoId = flashvars.playbackTracking.video_id.toString();
 
+    var likes = 0;
+    var dislikes = 0;
+    var votesUpNode = dom.querySelector("span.votesUp");
+    var votesDownNode = dom.querySelector("span.votesDown");
+    if (votesUpNode) likes = parseNumberSuffix(votesUpNode.textContent.trim());
+    if (votesDownNode) dislikes = parseNumberSuffix(votesDownNode.textContent.trim());
+
 	const details = new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, videoId, config.id),
 		name: flashvars.video_title,
@@ -429,7 +484,8 @@ source.getContentDetails = function (url) {
 		isLive: false,
 		description: description,
 		video: new VideoSourceDescriptor(sources),
-		subtitles: subtitles
+		subtitles: subtitles,
+        rating: new RatingLikesDislikes(likes, dislikes)
 	});
 
 	details.getContentRecommendations = function () {
@@ -460,7 +516,7 @@ source.getContentRecommendations = function(url) {
 					const duration = parseDuration(durationStr);
 					const viewsSpan = li.querySelector(".views var, .views");
 					const viewsStr = viewsSpan ? viewsSpan.textContent.trim() : "0";
-					const views = viewsStr && viewsStr.includes("K") || viewsStr.includes("M") ? parseNumberSuffix(viewsStr) : 0;
+					const views = viewsStr && (viewsStr.includes("K") || viewsStr.includes("M")) ? parseNumberSuffix(viewsStr) : 0;
 					const authorLink = li.querySelector(".usernameWrap a, a[href*='/model/'], a[href*='/pornstar/'], a[href*='/channels/']");
 					let authorInfo = { channel: "", authorName: "" };
 					if (authorLink) {
@@ -608,7 +664,7 @@ function getShortsPager(from, count) {
 	});
 
 	var hasMore = resultArray.length > 0;
-	return new PornhubVideoPager(resultArray, hasMore, "/shorties", {}, 1);
+	return new PornhubVideoPager(resultArray, !!hasMore, "/shorties", {}, 1);
 }
 
 function isBotChallenge(html) {
@@ -624,7 +680,8 @@ function solveBotChallenge(html) {
 		scriptContent = scriptContent.replace(/<!--/g, "").replace(/-->/g, "");
 		scriptContent = scriptContent.replace(/document\.cookie\s*=\s*"KEY="\s*\+\s*([^;]+);/, 'return $1;');
 		scriptContent = scriptContent.replace(/document\.location\.reload\([^)]*\);?/g, "");
-		var solverCode = scriptContent + "\nreturn go();";
+		scriptContent = scriptContent.replace(/window\.location\.reload\([^)]*\);?/g, "");
+		var solverCode = scriptContent + "\ntry { return go(); } catch(e) { return null; }";
 		var keyCookieValue = eval("(function() { " + solverCode + " })()");
 		if (keyCookieValue) return keyCookieValue;
 		else return null;
@@ -664,6 +721,101 @@ function refreshSession() {
 	}
 }
 
+function updateCookies(resp) {
+	if (!resp || !resp.headers) return;
+	let setCookies = resp.headers["set-cookie"] || resp.headers["Set-Cookie"];
+	if (!setCookies) return;
+	if (typeof setCookies === 'string') setCookies = [setCookies];
+	
+	let cStr = headers["Cookie"] || "";
+	setCookies.forEach(c => {
+		let pair = c.split(';')[0].trim();
+		let key = pair.split('=')[0].trim();
+		if (!key) return;
+		let regex = new RegExp(key + "=[^;]*", "g");
+		if (cStr.includes(key + "=")) {
+			cStr = cStr.replace(regex, pair);
+		} else {
+			cStr += (cStr ? "; " : "") + pair;
+		}
+	});
+	headers["Cookie"] = cStr;
+}
+
+function httpGET(url, options = {}) {
+	var customHeaders = options.headers || null;
+	var requireToken = options.requireToken || false;
+	var parseJson = options.parseJson || false;
+	var retries = options.retries !== undefined ? options.retries : 3;
+	let lastError = null;
+	let attempts = retries + 1;
+
+	while (attempts > 0) {
+		try {
+			if (!headers["Cookie"] || headers["Cookie"].length === 0) {
+				refreshSession();
+			} else if (requireToken && state.token === "") {
+				refreshSession();
+			}
+
+			var requestHeaders = customHeaders ? Object.assign({}, customHeaders) : Object.assign({}, headers);
+			if (!customHeaders || !customHeaders["Cookie"]) {
+				requestHeaders["Cookie"] = headers["Cookie"];
+			}
+
+			const resp = http.GET(url, requestHeaders);
+			updateCookies(resp);
+
+			if (resp.code === 404 && options.emptyOnNotFound === true) return null;
+			var body = resp.body || "";
+
+			if (isBotChallenge(body)) {
+				var keyCookieValue = solveBotChallenge(body);
+				if (!keyCookieValue) throw new ScriptException("Failed to solve bot challenge");
+				
+				let cStr = headers["Cookie"] || "";
+				let keyPair = "KEY=" + keyCookieValue;
+				if (cStr.includes("KEY=")) cStr = cStr.replace(/KEY=[^;]*/g, keyPair);
+				else cStr += (cStr ? "; " : "") + keyPair;
+				headers["Cookie"] = cStr;
+				
+				requestHeaders["Cookie"] = headers["Cookie"];
+				const retryResp = http.GET(url, requestHeaders);
+				updateCookies(retryResp);
+				
+				if (!retryResp.isOk) throw new ScriptException("Retry request [" + url + "] failed with code [" + retryResp.code + "]");
+				body = retryResp.body || "";
+				if (isBotChallenge(body)) throw new ScriptException("Bot challenge persists after solving (" + body.length + ")");
+			} else if (!resp.isOk) {
+				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+			}
+
+			if (parseJson) {
+				try {
+					var json = JSON.parse(body);
+					if (json.error) throw new ScriptException("API error: " + json.error);
+					return json;
+				} catch (parseError) {
+					throw new ScriptException("JSON parse error: " + parseError);
+				}
+			}
+			return body;
+		} catch (error) {
+			lastError = error;
+			attempts--;
+			if (attempts > 0) {
+				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token") || error.toString().includes("challenge")) {
+					try { refreshSession(); } catch (e) {}
+				}
+				bridge.sleep(1000);
+				continue;
+			}
+			throw lastError;
+		}
+	}
+	throw lastError || new ScriptException("Request failed for unknown reason");
+}
+
 function getVideoId(dom) {
 	return dom.querySelector("div#player").getAttribute("data-video-id");
 }
@@ -676,14 +828,24 @@ source.getComments = function (url) {
 }
 
 source.getSubComments = function (comment) {
-	throw new ScriptException("No soportado");
-}
-
-function parseStringWithKorMSuffixes(subscriberString) {
-    const numericPart = parseFloat(subscriberString);
-    if (subscriberString.includes("K")) return Math.floor(numericPart * 1000);
-    else if (subscriberString.includes("M")) return Math.floor(numericPart * 1000000);
-    else return Math.floor(numericPart);
+    if (!comment.context || !comment.context.id) return new CommentPager([], false);
+    const url = URL_BASE + `/comment/replies?id=${comment.context.id}&token=${state.token}`;
+    try {
+        var html = httpGET(url, { requireToken: true });
+        var comments = getComments(html);
+        return new CommentPager(comments.comments.map(c => {
+            return new Comment({
+                author: new PlatformAuthorLink(new PlatformID(PLATFORM, c.username, config.id), c.username, "", c.avatar, ""),
+                message: c.message,
+                rating: new RatingLikesDislikes(c.voteUp, c.voteDown),
+                date: Math.round(c.date.getTime() / 1000),
+                replyCount: 0,
+                context: { id: c.id }
+            });
+        }), false);
+    } catch(e) {
+        return new CommentPager([], false);
+    }
 }
 
 function getCommentPager(path, params, page) {
@@ -706,7 +868,7 @@ function getCommentPager(path, params, page) {
 			replyCount: c.totalReplies || 0,
 			context: { id: c.id }
 		});
-	}), comments.total > page_end, path, params, page);
+	}), !!(comments.total > page_end), path, params, page);
 }
 
 function getComments(html) {
@@ -906,7 +1068,7 @@ function getPornstarInfo(url) {
 }
 
 class PornhubVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page) { super(results, hasMore, { path, params, page }); }
+	constructor(results, hasMore, path, params, page) { super(results, !!hasMore, { path, params, page }); }
 	nextPage() {
 		if (this.context.path === "/shorties") return getShortsPager(0, 12);
 		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
@@ -914,7 +1076,7 @@ class PornhubVideoPager extends VideoPager {
 }
 
 class PornhubChannelVideosPager extends VideoPager {
-	constructor(results, hasMore, path, params, page) { super(results, hasMore, { path, params, page }); }
+	constructor(results, hasMore, path, params, page) { super(results, !!hasMore, { path, params, page }); }
 	nextPage() {
 		if(this.context.path.includes("/channels/")) return getChannelVideosPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
 		else if(this.context.path.includes("/model/")) return getModelVideosPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
@@ -923,17 +1085,17 @@ class PornhubChannelVideosPager extends VideoPager {
 }
 
 class PornhubChannelPager extends ChannelPager {
-	constructor(results, hasMore, path, params, page) { super(results, hasMore, { path, params, page }); }
+	constructor(results, hasMore, path, params, page) { super(results, !!hasMore, { path, params, page }); }
 	nextPage() { return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1); }
 }
 
 class PornhubCommentPager extends CommentPager {
-	constructor(results, hasMore, path, params, page) { super(results, hasMore, { path, params, page }); }
+	constructor(results, hasMore, path, params, page) { super(results, !!hasMore, { path, params, page }); }
 	nextPage() { return getCommentPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1); }
 }
 
 class PornhubMultiChannelPager extends ChannelPager {
-	constructor(results, hasMore, query, page) { super(results, hasMore, { query, page }); }
+	constructor(results, hasMore, query, page) { super(results, !!hasMore, { query, page }); }
 	nextPage() { return getMultiChannelPager(this.context.query, (this.context.page ?? 1) + 1); }
 }
 
@@ -977,7 +1139,7 @@ function getMultiChannelPager(query, page) {
 	} catch(e) {}
 	return new PornhubMultiChannelPager(allChannels.map(c => {
 		return new PlatformAuthorLink(new PlatformID(PLATFORM, c.name, config.id), c.displayName, URL_BASE + c.url, c.avatar ?? "", c.subscribers);
-	}), hasMore, query, page);
+	}), !!hasMore, query, page);
 }
 
 function getPornstarsFromSearch(html) {
@@ -1024,7 +1186,7 @@ function getChannelPager(path, params, page) {
 	var channels = getChannels(html, "searchChannelsSection");
 	return new PornhubChannelPager(channels.channels.map(c => {
 			return new PlatformAuthorLink(new PlatformID(PLATFORM, c.name, config.id), c.displayName, URL_BASE + c.url, c.avatar ?? "", c.subscribers);
-		}), channels.hasNextPage, path, params, page);
+		}), !!channels.hasNextPage, path, params, page);
 }
 
 function getChannels(html) {
@@ -1040,7 +1202,10 @@ function getChannels(html) {
 	});
 	var hasNextPage = false; 
 	var pageNextNode = dom.getElementsByClassName("page_next");
-	if (pageNextNode.length > 0) hasNextPage = pageNextNode[0].firstChild.getAttribute("href") == "" ? false : true;
+	if (pageNextNode.length > 0) {
+		var nextAnchor = pageNextNode[0].querySelector("a");
+		hasNextPage = nextAnchor && nextAnchor.getAttribute("href") !== "";
+	}
 	return { hasNextPage: hasNextPage, channels: resultArray };
 }
 
@@ -1063,7 +1228,7 @@ function getChannelVideosPager(path, params, page) {
 	}
 	if (!ulElement) {
 		var vids = getChannelContents(html);
-		return _buildPornhubChannelVideosPager(vids, vids.totalElemsPages > page_end, path, params, page);
+		return _buildPornhubChannelVideosPager(vids, !!(vids.totalElemsPages > page_end), path, params, page);
 	}
 	var resultArray = [];
 	var authorName = path.split("/")[4];
@@ -1097,7 +1262,7 @@ function getChannelVideosPager(path, params, page) {
 		}
 	});
 	var vids = { videos: resultArray, totalElemsPages: resultArray.length };
-	return _buildPornhubChannelVideosPager(vids, resultArray.length >= count, path, params, page);
+	return _buildPornhubChannelVideosPager(vids, !!(resultArray.length >= count), path, params, page);
 }
 
 function getModelVideosPager(path, params, page) {
@@ -1148,10 +1313,10 @@ function getModelVideosPager(path, params, page) {
 			}
 		});
 		var vids = { videos: resultArray, hasNextPage: resultArray.length >= count };
-		return _buildPornhubChannelVideosPager(vids, vids.hasNextPage, path, params, page);
+		return _buildPornhubChannelVideosPager(vids, !!vids.hasNextPage, path, params, page);
 	}
 	var vidsOld = getModelContents(html);
-	return _buildPornhubChannelVideosPager(vidsOld, vidsOld.hasNextPage, path, params, page)
+	return _buildPornhubChannelVideosPager(vidsOld, !!vidsOld.hasNextPage, path, params, page)
 }
 
 function getPornstarVideosPager(path, params, page) {
@@ -1203,10 +1368,10 @@ function getPornstarVideosPager(path, params, page) {
 			}
 		});
 		var vids = { videos: resultArray, totalElemsPages: resultArray.length };
-		return _buildPornhubChannelVideosPager(vids, resultArray.length >= count, path, params, page);
+		return _buildPornhubChannelVideosPager(vids, !!(resultArray.length >= count), path, params, page);
 	}
 	var vidsOld = getPornstarContents(html);
-	return _buildPornhubChannelVideosPager(vidsOld, vidsOld.totalElemsPages > page_end, path, params, page)
+	return _buildPornhubChannelVideosPager(vidsOld, !!(vidsOld.totalElemsPages > page_end), path, params, page)
 }
 
 function _buildPornhubChannelVideosPager(vids, hasNextPage, path, params, page) {
@@ -1223,7 +1388,7 @@ function _buildPornhubChannelVideosPager(vids, hasNextPage, path, params, page) 
 			url: URL_BASE + v.videoUrl,
 			isLive: false
 		});
-	}), hasNextPage, path, params, page);
+	}), !!hasNextPage, path, params, page);
 }
 
 function getChannelContents(html) {
@@ -1347,7 +1512,7 @@ function getVideoPager(path, params, page) {
 			url: v.videoUrl,
 			isLive: false
 		});
-	}), vids.hasNextPage, path, params, page);
+	}), !!vids.hasNextPage, path, params, page);
 }
 
 function getVideos(html, ulId) {
@@ -1367,8 +1532,8 @@ function getVideos(html, ulId) {
 	var hasNextPage = false;
 	var nextNodes = node.getElementsByClassName("page_next");
 	if (nextNodes.length > 0) {
-		var nextHref = nextNodes[0].firstChild ? nextNodes[0].firstChild.getAttribute("href") : "";
-		hasNextPage = !!nextHref;
+		var nextAnchor = nextNodes[0].querySelector("a");
+		hasNextPage = nextAnchor && nextAnchor.getAttribute("href") !== "";
 	}
 
     if (ulElement) {
@@ -1410,87 +1575,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-function httpGET(url, options = {}) {
-	var customHeaders = options.headers || null;
-	var requireToken = options.requireToken || false;
-	var parseJson = options.parseJson || false;
-	var retries = options.retries !== undefined ? options.retries : 3;
-	let lastError = null;
-	let attempts = retries + 1;
-	var requestHeaders = customHeaders || headers;
-
-	while (attempts > 0) {
-		try {
-			if (headers["Cookie"].length === 0) {
-				refreshSession();
-				if (!customHeaders) requestHeaders = headers;
-				else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
-			} else if (requireToken && state.token === "") {
-				refreshSession();
-				if (!customHeaders) requestHeaders = headers;
-				else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
-			}
-
-			const resp = http.GET(url, requestHeaders);
-			if (resp.code === 404 && options.emptyOnNotFound === true) return null;
-			if (!resp.isOk) throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-			var body = resp.body;
-
-			if (isBotChallenge(body)) {
-				var keyCookieValue = solveBotChallenge(body);
-				if (!keyCookieValue) throw new ScriptException("Failed to solve bot challenge");
-				headers["Cookie"] += "; KEY=" + keyCookieValue;
-				if (!customHeaders) requestHeaders = headers;
-				else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
-				const retryResp = http.GET(url, requestHeaders);
-				if (!retryResp.isOk) throw new ScriptException("Retry request [" + url + "] failed with code [" + retryResp.code + "]");
-				body = retryResp.body;
-				if (isBotChallenge(body)) throw new ScriptException("Bot challenge persists after solving");
-			}
-
-			if (parseJson) {
-				try {
-					var json = JSON.parse(body);
-					if (json.error) throw new ScriptException("API error: " + json.error);
-					return json;
-				} catch (parseError) {
-					throw new ScriptException("JSON parse error: " + parseError);
-				}
-			}
-			return body;
-		} catch (error) {
-			lastError = error;
-			attempts--;
-			if (attempts > 0) {
-				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token")) {
-					try {
-						refreshSession();
-						if (!customHeaders) requestHeaders = headers;
-						else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
-					} catch (refreshError) {}
-				}
-				bridge.sleep(1000);
-				continue;
-			}
-			throw lastError;
-		}
-	}
-	throw lastError || new ScriptException("Request failed for unknown reason");
-}
-
-function parseNumberSuffix(numStr) {
-	var mul = 1;
-	if (numStr.includes("K")) mul = 1000;
-	if (numStr.includes("M")) mul = 1000000;
-	var out = parseFloat(numStr.slice(0, -1)) * mul;
-	return out;
-}
-
-function parseDuration(durationStr) {
-	var splitted = durationStr.split(":");
-	var mins = parseInt(splitted[0]);
-	var secs = parseInt(splitted[1]);
-	return 60 * mins + secs;
-}
-
-log("Pornhub Final Script v4 Loaded");
+log("Pornhub Script Final v9 Loaded");
