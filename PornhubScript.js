@@ -108,7 +108,7 @@ function extractThumbnail(liNode) {
     }
 
     const html = liNode.innerHTML || "";
-    const regexMatch = html.match(/(?:data-image|data-src|data-thumb_url|src)=['"]([^'"]*\.(?:jpg|jpeg|png|webp)[^'"]*)['"]/i);
+    const regexMatch = html.match(/(?:data-image|data-src|data-thumb_url|src)=['"]([^'\"]*\.(?:jpg|jpeg|png|webp)[^'"]*)['"]/i);
     if (regexMatch && regexMatch[1] && !regexMatch[1].includes("1x1.gif") && !regexMatch[1].startsWith("data:image/")) {
         return absolutePlatformUrl(regexMatch[1].replace(/&amp;/g, "&"));
     }
@@ -450,11 +450,50 @@ function buildPlaybackProbeOrder(definitions) {
 function extractFlashvarsFromHtml(html) {
 	if (!html || typeof html !== "string") return null;
 	const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
-	if (!match) return null;
+	if (match) {
+		try {
+			const parsed = JSON.parse(match[1]);
+			if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
+			return parsed;
+		} catch (e) {
+			log("Flashvars JSON parse error: " + e);
+		}
+	}
+	const mediaMatch = html.match(/"mediaDefinitions"\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/m) || html.match(/mediaDefinitions\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/m);
+	if (mediaMatch) {
+		try {
+			const defs = JSON.parse(mediaMatch[1]);
+			if (Array.isArray(defs)) return { mediaDefinitions: defs };
+		} catch (e) {
+			log("Flashvars mediaDefinitions parse error: " + e);
+		}
+	}
+	const attrMatch = html.match(/data-player-config=['"]({[\s\S]+?})['"]/);
+	if (attrMatch) {
+		try {
+			const parsed = JSON.parse(attrMatch[1]);
+			if (parsed) return parsed;
+		} catch (e) {
+			log("Flashvars attribute parse error: " + e);
+		}
+	}
+	return null;
+}
+
+function regenerateFlashvarsByReload(url) {
 	try {
-		return JSON.parse(match[1]);
+		const reloadUrl = url + (url.includes("?") ? "&" : "?") + "_cb=" + Date.now();
+		log("Regenerando flashvars recargando la página del video: " + reloadUrl);
+		const html = httpGET(reloadUrl, { retries: 1 });
+		const flashvars = extractFlashvarsFromHtml(html);
+		if (flashvars && Array.isArray(flashvars.mediaDefinitions) && flashvars.mediaDefinitions.length > 0) {
+			log("Flashvars regenerados con " + flashvars.mediaDefinitions.length + " definiciones.");
+			return flashvars;
+		}
+		log("No se obtuvieron mediaDefinitions tras recargar la página del video.");
+		return flashvars;
 	} catch (e) {
-		log("Flashvars parse error: " + e);
+		log("Error regenerando flashvars: " + e);
 		return null;
 	}
 }
@@ -469,29 +508,39 @@ function loadPlaybackPage(url) {
 		const pageUrl = pageAttempt === 0 ? url : url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + pageAttempt;
 		try {
 			const html = httpGET(pageUrl, {});
-			const flashvars = extractFlashvarsFromHtml(html);
-			if (!flashvars) {
-				log("No flashvars encontrados en la página de reproducción (intento " + (pageAttempt + 1) + ")");
-				try { refreshSession(); } catch (e) {}
-				if (pageAttempt < 3) { bridge.sleep(1200); continue; }
-				throw new ScriptException("El reproductor de video no está disponible en esta página.");
+			let flashvars = extractFlashvarsFromHtml(html);
+			if (!flashvars || !Array.isArray(flashvars.mediaDefinitions) || flashvars.mediaDefinitions.length === 0) {
+				log("No se encontraron mediaDefinitions; intentando recarga para regenerar flashvars.");
+				const fresh = regenerateFlashvarsByReload(url);
+				if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
+					flashvars = fresh;
+				} else {
+					if (pageAttempt < 3) {
+						bridge.sleep(1200);
+						continue;
+					}
+					throw new ScriptException("El reproductor de video no está disponible en esta página.");
+				}
 			}
 
-			const definitions = (flashvars.mediaDefinitions || []).filter(definition => normalizeMediaDefinition(definition));
+			const definitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
 			if (!definitions.length) {
-				log("No se detectaron mediaDefinitions compatibles (intento " + (pageAttempt + 1) + ")");
-				try { refreshSession(); } catch (e) {}
-				if (pageAttempt < 3) { bridge.sleep(1200); continue; }
+				if (pageAttempt < 3) {
+					bridge.sleep(1200);
+					continue;
+				}
 				throw new ScriptException("El video no tiene enlaces de reproducción compatibles o es exclusivo Premium.");
 			}
 
 			const orderedDefinitions = buildPlaybackProbeOrder(definitions);
 			for (let probeAttempt = 0; probeAttempt < 5; probeAttempt++) {
-				let probeSucceeded = false;
+				let changedAfterRegeneration = false;
 				for (let i = 0; i < orderedDefinitions.length; i++) {
 					const def = orderedDefinitions[i];
-					const baseUrl = def.videoUrl;
-					const probeUrls = [baseUrl, baseUrl + (baseUrl.includes("?") ? "&" : "?") + "_=" + Date.now() + i + probeAttempt];
+					const probeUrls = [
+						def.videoUrl,
+						def.videoUrl + (def.videoUrl.includes("?") ? "&" : "?") + "_=" + Date.now() + i + probeAttempt
+					];
 					for (const probeUrl of probeUrls) {
 						try {
 							log("Playback probe: " + probeUrl + " (quality=" + def.quality + ", format=" + def.format + ")");
@@ -500,28 +549,42 @@ function loadPlaybackPage(url) {
 							if (response.isOk) {
 								finalHtml = html;
 								finalFlashvars = flashvars;
-								finalDefinitions = definitions;
+								finalDefinitions = orderedDefinitions;
 								return { html: finalHtml, flashvars: finalFlashvars, definitions: finalDefinitions };
 							}
 							lastCode = response.code;
 							log("Sonda CDN rechazada con código HTTP: " + lastCode + ". URL: " + probeUrl);
 							if (lastCode === 410 || lastCode === 401 || lastCode === 403) {
-								try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
+								const fresh = regenerateFlashvarsByReload(url);
+								if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
+									flashvars = fresh;
+									changedAfterRegeneration = true;
+									break;
+								}
 							}
 						} catch (e) {
-							log("Error probando URL de reproducción: " + e + " :: " + probeUrl);
+							log("Error probando URL de reproducción: " + e);
 						}
 					}
+					if (changedAfterRegeneration) break;
 				}
-				if (probeSucceeded) break;
+				if (changedAfterRegeneration) {
+					const regeneratedDefinitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
+					if (regeneratedDefinitions.length > 0) {
+						const regenOrdered = buildPlaybackProbeOrder(regeneratedDefinitions);
+						for (let j = 0; j < regenOrdered.length; j++) {
+							orderedDefinitions[j] = regenOrdered[j];
+						}
+					}
+					break;
+				}
 				bridge.sleep(1000 + probeAttempt * 500);
 			}
-			if (finalHtml) break;
 			try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
 			if (pageAttempt < 3) bridge.sleep(1500);
 		} catch (e) {
 			log("Error cargando la página de playback: " + e);
-			try { refreshSession(); } catch (e2) {}
+			try { refreshSession(); } catch (e2) { log("refreshSession() falló: " + e2); }
 			if (pageAttempt < 3) bridge.sleep(1500);
 		}
 	}
@@ -927,6 +990,20 @@ function httpGET(url, options = {}) {
 			if (resp.code === 404 && options.emptyOnNotFound === true) return null;
 			var body = resp.body || "";
 
+			if (!resp.isOk) {
+				if (resp.code === 401 || resp.code === 403 || resp.code === 410) {
+					log("httpGET: recibió " + resp.code + " para " + url + ". Forzando refreshSession y reintento.");
+					if (attempts > 1) {
+						try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
+						attempts--;
+						bridge.sleep(1000);
+						continue;
+					}
+					throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+				}
+				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+			}
+
 			if (isBotChallenge(body)) {
 				var keyCookieValue = solveBotChallenge(body);
 				if (!keyCookieValue) throw new ScriptException("Failed to solve bot challenge");
@@ -944,8 +1021,6 @@ function httpGET(url, options = {}) {
 				if (!retryResp.isOk) throw new ScriptException("Retry request [" + url + "] failed with code [" + retryResp.code + "]");
 				body = retryResp.body || "";
 				if (isBotChallenge(body)) throw new ScriptException("Bot challenge persists after solving (" + body.length + ")");
-			} else if (!resp.isOk) {
-				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
 			}
 
 			if (parseJson) {
