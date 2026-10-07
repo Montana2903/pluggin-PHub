@@ -342,7 +342,7 @@ function parsePlaylistPage(html, playlistUrl, playlistId) {
 	var title = titleNode ? titleNode.textContent.trim() : "";
 	if (!wrapper || !title) throw new ScriptException("This playlist is unavailable, private, or no longer exists.");
 
-	var parsed = getVideos(html, "videoPlaylist").videos || [];
+var parsed = getVideos(html, "videoPlaylist").videos || [];
 	var seen = {};
 	var videos = [];
 	parsed.forEach(function(video) {
@@ -395,7 +395,6 @@ const supportedResolutions = {
 	'144': { width: 256, height: 144 }
 };
 
-// 1. Cabeceras de streaming aisladas del dominio principal (sin Cookies)[cite: 1]
 function playbackHeaders(url) {
 	return { 
 		"Referer": url, 
@@ -422,7 +421,7 @@ function extractFlashvarsFromHtml(html) {
             const parsed = JSON.parse(match[1]);
             if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
         }
-    } catch (e) { log("Flashvars JSON parse error: " + e); }
+    } catch (e) {}
     
     try {
         const startIndex = html.indexOf('"mediaDefinitions"');
@@ -461,16 +460,14 @@ function extractFlashvarsFromHtml(html) {
                 }
             }
         }
-    } catch (e) { log("Flashvars bracket parser error: " + e); }
+    } catch (e) {}
 
 	return null;
 }
 
-// 2. Carga y verificación HLS estricta contra errores CDN (410/403/404)[cite: 1]
 function loadPlaybackPage(url) {
 	let lastCode = null;
 	for (let attempt = 0; attempt < 3; attempt++) {
-		// Petición fresca a la página para forzar reasignación de edge CDN si expiraron los enlaces[cite: 1]
 		const pageUrl = attempt === 0 ? url : url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + attempt;
 		const html = httpGET(pageUrl, {});
 		const flashvars = extractFlashvarsFromHtml(html);
@@ -485,11 +482,9 @@ function loadPlaybackPage(url) {
 			
 		if (!definitions.length) throw new ScriptException("El video no tiene enlaces de reproducción compatibles.");
 		
-		// Probar la lista de reproducción predeterminada[cite: 1]
 		const probe = definitions.find(definition => definition.defaultQuality) || definitions[0];
 		const response = http.GET(probe.videoUrl, playbackHeaders(url));
 		
-		// Confirmar que la respuesta contenga un manifiesto HLS válido (#EXTM3U)[cite: 1]
 		if (response.isOk && /^\s*#EXTM3U/.test(response.body)) {
 			return { html, flashvars, definitions };
 		}
@@ -553,9 +548,7 @@ source.getContentDetails = function (url) {
 	try {
 		var scriptNode = dom.querySelector('script[type="application/ld+json"]');
 		if (scriptNode && scriptNode.text) ldJson = JSON.parse(scriptNode.text);
-	} catch (e) {
-		log("No se pudo parsear application/ld+json: " + e);
-	}
+	} catch (e) {}
 	var description = ldJson.description || "";
 	var userAvatar = "";
 	var userInfoNode = null;
@@ -830,9 +823,7 @@ function refreshSession() {
 			try {
 				sessionId = JSON.parse(adContextInfo)["session_id"];
 				state.sessionCookie = sessionId;
-			} catch (e) {
-				log("No se pudo extraer session_id del meta adsbytrafficjunkycontext: " + e);
-			}
+			} catch (e) {}
 		}
 		var cookiesFromHeaders = [];
 		if (resp.headers && resp.headers["set-cookie"]) {
@@ -850,33 +841,6 @@ function refreshSession() {
 	}
 }
 
-function updateCookies(resp) {
-	if (!resp || !resp.headers) return;
-    let setCookies = [];
-    for (const key in resp.headers) {
-        if (key.toLowerCase() === 'set-cookie') {
-            let val = resp.headers[key];
-            if (Array.isArray(val)) setCookies = setCookies.concat(val);
-            else setCookies.push(val);
-        }
-    }
-	if (setCookies.length === 0) return;
-	
-	let cStr = headers["Cookie"] || "";
-	setCookies.forEach(c => {
-		let pair = c.split(';')[0].trim();
-		let key = pair.split('=')[0].trim();
-		if (!key) return;
-		let regex = new RegExp(key + "=[^;]*", "g");
-		if (cStr.includes(key + "=")) {
-			cStr = cStr.replace(regex, pair);
-		} else {
-			cStr += (cStr ? "; " : "") + pair;
-		}
-	});
-	headers["Cookie"] = cStr;
-}
-
 function httpGET(url, options = {}) {
 	var customHeaders = options.headers || null;
 	var requireToken = options.requireToken || false;
@@ -884,57 +848,38 @@ function httpGET(url, options = {}) {
 	var retries = options.retries !== undefined ? options.retries : 3;
 	let lastError = null;
 	let attempts = retries + 1;
+	var requestHeaders = customHeaders || headers;
 
 	while (attempts > 0) {
 		try {
-			if (!headers["Cookie"] || headers["Cookie"].length === 0) {
+			if (headers["Cookie"].length === 0) {
 				refreshSession();
+				if (!customHeaders) requestHeaders = headers;
+				else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
 			} else if (requireToken && state.token === "") {
 				refreshSession();
-			}
-
-			var requestHeaders = customHeaders ? Object.assign({}, customHeaders) : Object.assign({}, headers);
-			if (!customHeaders || !customHeaders["Cookie"]) {
-				requestHeaders["Cookie"] = headers["Cookie"];
+				if (!customHeaders) requestHeaders = headers;
+				else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
 			}
 
 			const resp = http.GET(url, requestHeaders);
-			updateCookies(resp);
-
 			if (resp.code === 404 && options.emptyOnNotFound === true) return null;
-			var body = resp.body || "";
+			if (!resp.isOk) throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
 
-			if (!resp.isOk) {
-				if (resp.code === 401 || resp.code === 403 || resp.code === 410) {
-					log("httpGET: recibió " + resp.code + " para " + url + ". Forzando refreshSession y reintento.");
-					if (attempts > 1) {
-						try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
-						attempts--;
-						bridge.sleep(1000);
-						continue;
-					}
-					throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-				}
-				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-			}
+			var body = resp.body;
 
 			if (isBotChallenge(body)) {
 				var keyCookieValue = solveBotChallenge(body);
 				if (!keyCookieValue) throw new ScriptException("Failed to solve bot challenge");
 				
-				let cStr = headers["Cookie"] || "";
-				let keyPair = "KEY=" + keyCookieValue;
-				if (cStr.includes("KEY=")) cStr = cStr.replace(/KEY=[^;]*/g, keyPair);
-				else cStr += (cStr ? "; " : "") + keyPair;
-				headers["Cookie"] = cStr;
+				headers["Cookie"] += "; KEY=" + keyCookieValue;
+				if (!customHeaders) requestHeaders = headers;
+				else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
 				
-				requestHeaders["Cookie"] = headers["Cookie"];
 				const retryResp = http.GET(url, requestHeaders);
-				updateCookies(retryResp);
-				
 				if (!retryResp.isOk) throw new ScriptException("Retry request [" + url + "] failed with code [" + retryResp.code + "]");
-				body = retryResp.body || "";
-				if (isBotChallenge(body)) throw new ScriptException("Bot challenge persists after solving (" + body.length + ")");
+				body = retryResp.body;
+				if (isBotChallenge(body)) throw new ScriptException("Bot challenge persists after solving");
 			}
 
 			if (parseJson) {
@@ -951,8 +896,12 @@ function httpGET(url, options = {}) {
 			lastError = error;
 			attempts--;
 			if (attempts > 0) {
-				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token") || error.toString().includes("challenge") || error.toString().includes("410")) {
-					try { refreshSession(); } catch (e) {}
+				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token") || error.toString().includes("410")) {
+					try {
+						refreshSession();
+						if (!customHeaders) requestHeaders = headers;
+						else { customHeaders["Cookie"] = headers["Cookie"]; requestHeaders = customHeaders; }
+					} catch (e) {}
 				}
 				bridge.sleep(1000);
 				continue;
@@ -1706,4 +1655,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-log("Pornhub Script Final v9.8 - Fix HTTP 410 Aplicado");
+log("Pornhub Script Final v9.6 - Fix HTTP 410 Aplicado");
