@@ -17,6 +17,14 @@ var headers = {
 	"Upgrade-Insecure-Requests": "1"
 };
 
+function playbackHeaders(url) {
+	return { 
+		"Referer": url, 
+		"User-Agent": headers["User-Agent"], 
+		"Origin": URL_BASE 
+	};
+}
+
 function buildQuery(params) {
 	let query = "";
 	let first = true;
@@ -395,62 +403,13 @@ const supportedResolutions = {
 	'144': { width: 256, height: 144 }
 };
 
-function playbackHeaders(url) {
-	return { 
-		"Referer": url, 
-		"User-Agent": headers["User-Agent"], 
-		"Origin": URL_BASE,
-		"Cookie": headers["Cookie"]
-	};
-}
-
 function normalizeMediaDefinition(definition) {
 	if (!definition || typeof definition !== "object") return null;
 	if (typeof definition.quality === "object") return null;
+	if (!supportedResolutions[definition.quality]) return null;
 	if (typeof definition.videoUrl !== "string") return null;
 	if (!/^https?:\/\//i.test(definition.videoUrl)) return null;
-    
-    // Parche 9.7: Si el servidor devuelve una resolución desconocida pero válida, la forzamos a una segura.
-    if (!supportedResolutions[definition.quality]) {
-        log("Fallback aplicado para resolución desconocida: " + definition.quality);
-        definition.quality = "720"; // Forzamos una calidad media para asegurar reproducción
-    }
-
 	return definition;
-}
-
-function buildPlaybackProbeOrder(definitions) {
-	const cleaned = [];
-	const seen = {};
-	for (const def of definitions) {
-		const normalized = normalizeMediaDefinition(def);
-		if (!normalized) continue;
-		const key = `${normalized.format || ""}|${normalized.quality || ""}|${normalized.videoUrl || ""}`;
-		if (seen[key]) continue;
-		seen[key] = true;
-		cleaned.push(normalized);
-	}
-	cleaned.sort((a, b) => {
-		const aPriority = (a.format === "hls" ? 10 : 1) + (a.defaultQuality ? 5 : 0) + (Number(a.quality) || 0);
-		const bPriority = (b.format === "hls" ? 10 : 1) + (b.defaultQuality ? 5 : 0) + (Number(b.quality) || 0);
-		return bPriority - aPriority;
-	});
-	const ordered = [];
-	const preferred = [
-		(d => d.format === "hls" && d.quality === "1080"),
-		(d => d.format === "hls" && d.defaultQuality === true),
-		(d => d.format === "hls"),
-		(d => d.format === "mp4" && d.quality === "1080"),
-		(d => d.format === "mp4" && d.defaultQuality === true),
-		(d => d.format === "mp4")
-	];
-	for (const matcher of preferred) {
-		for (const def of cleaned) {
-			if (matcher(def) && !ordered.includes(def)) ordered.push(def);
-		}
-	}
-	for (const def of cleaned) if (!ordered.includes(def)) ordered.push(def);
-	return ordered;
 }
 
 function extractFlashvarsFromHtml(html) {
@@ -506,133 +465,44 @@ function extractFlashvarsFromHtml(html) {
 	return null;
 }
 
-function regenerateFlashvarsByReload(url) {
-	try {
-        // Parche 9.7: Forzamos la obtención de una nueva cookie ANTES de intentar recargar la página.
-        // Esto evita que el servidor CDN reconozca nuestra sesión como 'quemada'.
-        log("Iniciando purga de sesión para reinicio en frío...");
-        refreshSession();
-        bridge.sleep(500); // Retraso obligatorio para que las cookies asienten
-
-		const reloadUrl = url + (url.includes("?") ? "&" : "?") + "_cb=" + Date.now();
-		log("Regenerando flashvars recargando la página con token fresco: " + reloadUrl);
-		const html = httpGET(reloadUrl, { retries: 1 });
-		const flashvars = extractFlashvarsFromHtml(html);
-		if (flashvars && Array.isArray(flashvars.mediaDefinitions) && flashvars.mediaDefinitions.length > 0) {
-			log("Flashvars regenerados con éxito.");
-			return flashvars;
-		}
-		log("No se obtuvieron definiciones tras recarga.");
-		return flashvars;
-	} catch (e) {
-		log("Error crítico en regeneración de flashvars: " + e);
-		return null;
-	}
-}
-
 function loadPlaybackPage(url) {
 	let lastCode = null;
-	let finalHtml = "";
-	let finalFlashvars = null;
-	let finalDefinitions = [];
-
-	for (let pageAttempt = 0; pageAttempt < 4; pageAttempt++) {
-		const pageUrl = pageAttempt === 0 ? url : url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + pageAttempt;
-		try {
-			const html = httpGET(pageUrl, {});
-			let flashvars = extractFlashvarsFromHtml(html);
-			if (!flashvars || !Array.isArray(flashvars.mediaDefinitions) || flashvars.mediaDefinitions.length === 0) {
-				log("MediaDefinitions ausentes; intentando recarga.");
-				const fresh = regenerateFlashvarsByReload(url);
-				if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
-					flashvars = fresh;
-				} else {
-					if (pageAttempt < 3) {
-						bridge.sleep(1500);
-						continue;
-					}
-					throw new ScriptException("Reproductor inalcanzable tras recargas.");
-				}
-			}
-
-			const definitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
-			if (!definitions.length) {
-				if (pageAttempt < 3) {
-					bridge.sleep(1500);
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const pageUrl = attempt === 0 ? url : `${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}${attempt}`;
+		const html = httpGET(pageUrl, {});
+		
+		const flashvars = extractFlashvarsFromHtml(html);
+		if (!flashvars || !Array.isArray(flashvars.mediaDefinitions)) continue;
+		
+		const definitions = flashvars.mediaDefinitions
+			.map(normalizeMediaDefinition)
+			.filter(def => def !== null);
+			
+		if (!definitions.length) {
+			if (attempt < 2) continue;
+			throw new ScriptException("El video no tiene enlaces de reproducción compatibles o es exclusivo Premium.");
+		}
+		
+		const hlsDefs = definitions.filter(def => def.format === "hls");
+		const probe = hlsDefs.find(def => def.defaultQuality) || hlsDefs[0];
+		
+		if (probe) {
+			const response = http.GET(probe.videoUrl, playbackHeaders(url));
+			if (response.isOk) {
+				if (!/^\s*#EXTM3U/.test(response.body)) {
+					lastCode = "Falso positivo 200 (Manifiesto HLS inválido)";
 					continue;
 				}
-				throw new ScriptException("Enlaces de reproducción vacíos (PosiblePremium).");
+				return { html, flashvars, definitions };
 			}
-
-			const orderedDefinitions = buildPlaybackProbeOrder(definitions);
-            let successFound = false;
-
-			for (let probeAttempt = 0; probeAttempt < 5; probeAttempt++) {
-				let changedAfterRegeneration = false;
-				for (let i = 0; i < orderedDefinitions.length; i++) {
-					const def = orderedDefinitions[i];
-					const probeUrls = [
-						def.videoUrl,
-						def.videoUrl + (def.videoUrl.includes("?") ? "&" : "?") + "_=" + Date.now() + i + probeAttempt
-					];
-					for (const probeUrl of probeUrls) {
-						try {
-							log("Playback probe: " + probeUrl.substring(0, 50) + "... (quality=" + def.quality + ", format=" + def.format + ")");
-							const response = http.GET(probeUrl, playbackHeaders(url));
-							updateCookies(response);
-							if (response.isOk) {
-								finalHtml = html;
-								finalFlashvars = flashvars;
-								finalDefinitions = orderedDefinitions;
-                                successFound = true;
-								return { html: finalHtml, flashvars: finalFlashvars, definitions: finalDefinitions };
-							}
-							lastCode = response.code;
-							log("Sonda rechazada: HTTP " + lastCode);
-							if (lastCode === 410 || lastCode === 401 || lastCode === 403) {
-                                // Parche 9.7: Aumentamos el retraso antes de bombardear el servidor
-                                bridge.sleep(2000); 
-								const fresh = regenerateFlashvarsByReload(url);
-								if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
-									flashvars = fresh;
-									changedAfterRegeneration = true;
-									break; // Romper el loop de URLs de sonda
-								}
-							}
-						} catch (e) {
-							log("Error en petición de sonda: " + e);
-						}
-					}
-					if (changedAfterRegeneration || successFound) break;
-				}
-				if (changedAfterRegeneration) {
-					const regeneratedDefinitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
-					if (regeneratedDefinitions.length > 0) {
-						const regenOrdered = buildPlaybackProbeOrder(regeneratedDefinitions);
-                        orderedDefinitions.length = 0; // Limpiar el array original
-						for (let j = 0; j < regenOrdered.length; j++) {
-							orderedDefinitions.push(regenOrdered[j]);
-						}
-					}
-                    // IMPORTANTE: Al salir aquí, el for principal (probeAttempt) continúa,
-                    // intentando ahora sondear con las URL regeneradas.
-					continue; 
-				}
-                if(successFound) break;
-				bridge.sleep(1500 + probeAttempt * 500);
-			}
-            if(successFound) return { html: finalHtml, flashvars: finalFlashvars, definitions: finalDefinitions };
-            
-			try { refreshSession(); } catch (e) {}
-			if (pageAttempt < 3) bridge.sleep(2000);
-		} catch (e) {
-			log("Error cargando la página base: " + e);
-			try { refreshSession(); } catch (e2) {}
-			if (pageAttempt < 3) bridge.sleep(2000);
+			lastCode = response.code;
+		} else {
+			return { html, flashvars, definitions };
 		}
+		
+		if (![403, 404, 410].includes(lastCode)) break;
 	}
-
-	throw new ScriptException(`El servidor de streaming rechazó el acceso (HTTP ${lastCode || "desconocido"}). Token inválido.`);
+	throw new ScriptException(`El servidor de streaming no proporcionó una playlist válida (HTTP ${lastCode}). Intenta de nuevo.`);
 }
 
 source.getContentDetails = function (url) {
@@ -1045,7 +915,7 @@ function httpGET(url, options = {}) {
 					if (attempts > 1) {
 						try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
 						attempts--;
-						bridge.sleep(1500); // Parche 9.7: Mayor backoff para red
+						bridge.sleep(1000);
 						continue;
 					}
 					throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
@@ -1089,7 +959,7 @@ function httpGET(url, options = {}) {
 				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token") || error.toString().includes("challenge") || error.toString().includes("410")) {
 					try { refreshSession(); } catch (e) {}
 				}
-				bridge.sleep(1500); // Parche 9.7
+				bridge.sleep(1000);
 				continue;
 			}
 			throw lastError;
@@ -1841,4 +1711,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-log("Pornhub Script Final v9.7 - Cold Start Restored");
+log("Pornhub Script Final v9.7 - Blindajes Quirúrgicos Aplicados");
