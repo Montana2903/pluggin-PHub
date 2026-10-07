@@ -17,14 +17,6 @@ var headers = {
 	"Upgrade-Insecure-Requests": "1"
 };
 
-function playbackHeaders(url) {
-	return { 
-		"Referer": url, 
-		"User-Agent": headers["User-Agent"], 
-		"Origin": URL_BASE 
-	};
-}
-
 function buildQuery(params) {
 	let query = "";
 	let first = true;
@@ -403,6 +395,15 @@ const supportedResolutions = {
 	'144': { width: 256, height: 144 }
 };
 
+// 1. Cabeceras de streaming aisladas del dominio principal (sin Cookies)[cite: 1]
+function playbackHeaders(url) {
+	return { 
+		"Referer": url, 
+		"User-Agent": headers["User-Agent"], 
+		"Origin": URL_BASE 
+	};
+}
+
 function normalizeMediaDefinition(definition) {
 	if (!definition || typeof definition !== "object") return null;
 	if (typeof definition.quality === "object") return null;
@@ -465,44 +466,38 @@ function extractFlashvarsFromHtml(html) {
 	return null;
 }
 
+// 2. Carga y verificación HLS estricta contra errores CDN (410/403/404)[cite: 1]
 function loadPlaybackPage(url) {
 	let lastCode = null;
 	for (let attempt = 0; attempt < 3; attempt++) {
-		const pageUrl = attempt === 0 ? url : `${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}${attempt}`;
+		// Petición fresca a la página para forzar reasignación de edge CDN si expiraron los enlaces[cite: 1]
+		const pageUrl = attempt === 0 ? url : url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + attempt;
 		const html = httpGET(pageUrl, {});
-		
 		const flashvars = extractFlashvarsFromHtml(html);
-		if (!flashvars || !Array.isArray(flashvars.mediaDefinitions)) continue;
-		
-		const definitions = flashvars.mediaDefinitions
-			.map(normalizeMediaDefinition)
-			.filter(def => def !== null);
-			
-		if (!definitions.length) {
-			if (attempt < 2) continue;
-			throw new ScriptException("El video no tiene enlaces de reproducción compatibles o es exclusivo Premium.");
+		if (!flashvars || !Array.isArray(flashvars.mediaDefinitions)) {
+			throw new ScriptException("El reproductor de video no está disponible en esta página.");
 		}
 		
-		const hlsDefs = definitions.filter(def => def.format === "hls");
-		const probe = hlsDefs.find(def => def.defaultQuality) || hlsDefs[0];
+		const definitions = flashvars.mediaDefinitions.filter(definition =>
+			definition.format === "hls" && typeof definition.defaultQuality === "boolean" &&
+			typeof definition.quality !== "object" && supportedResolutions[definition.quality] &&
+			typeof definition.videoUrl === "string" && definition.videoUrl.startsWith("https://"));
+			
+		if (!definitions.length) throw new ScriptException("El video no tiene enlaces de reproducción compatibles.");
 		
-		if (probe) {
-			const response = http.GET(probe.videoUrl, playbackHeaders(url));
-			if (response.isOk) {
-				if (!/^\s*#EXTM3U/.test(response.body)) {
-					lastCode = "Falso positivo 200 (Manifiesto HLS inválido)";
-					continue;
-				}
-				return { html, flashvars, definitions };
-			}
-			lastCode = response.code;
-		} else {
+		// Probar la lista de reproducción predeterminada[cite: 1]
+		const probe = definitions.find(definition => definition.defaultQuality) || definitions[0];
+		const response = http.GET(probe.videoUrl, playbackHeaders(url));
+		
+		// Confirmar que la respuesta contenga un manifiesto HLS válido (#EXTM3U)[cite: 1]
+		if (response.isOk && /^\s*#EXTM3U/.test(response.body)) {
 			return { html, flashvars, definitions };
 		}
 		
+		lastCode = response.code;
 		if (![403, 404, 410].includes(lastCode)) break;
 	}
-	throw new ScriptException(`El servidor de streaming no proporcionó una playlist válida (HTTP ${lastCode}). Intenta de nuevo.`);
+	throw new ScriptException("The streaming server could not provide a valid playlist (HTTP " + lastCode + "). Please try again.");
 }
 
 source.getContentDetails = function (url) {
@@ -1711,4 +1706,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-log("Pornhub Script Final v9.7 - Blindajes Quirúrgicos Aplicados");
+log("Pornhub Script Final v9.8 - Fix HTTP 410 Aplicado");
