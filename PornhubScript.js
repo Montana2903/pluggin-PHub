@@ -407,9 +407,15 @@ function playbackHeaders(url) {
 function normalizeMediaDefinition(definition) {
 	if (!definition || typeof definition !== "object") return null;
 	if (typeof definition.quality === "object") return null;
-	if (!supportedResolutions[definition.quality]) return null;
 	if (typeof definition.videoUrl !== "string") return null;
 	if (!/^https?:\/\//i.test(definition.videoUrl)) return null;
+    
+    // Parche 9.7: Si el servidor devuelve una resolución desconocida pero válida, la forzamos a una segura.
+    if (!supportedResolutions[definition.quality]) {
+        log("Fallback aplicado para resolución desconocida: " + definition.quality);
+        definition.quality = "720"; // Forzamos una calidad media para asegurar reproducción
+    }
+
 	return definition;
 }
 
@@ -450,7 +456,6 @@ function buildPlaybackProbeOrder(definitions) {
 function extractFlashvarsFromHtml(html) {
 	if (!html || typeof html !== "string") return null;
     
-    // Intento 1: Regex estándar para bloque JSON entero
     try {
         const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
         if (match && match[1]) {
@@ -459,7 +464,6 @@ function extractFlashvarsFromHtml(html) {
         }
     } catch (e) { log("Flashvars JSON parse error: " + e); }
     
-    // Intento 2: Búsqueda quirúrgica sin regex peligrosos (Bracket matching) validada
     try {
         const startIndex = html.indexOf('"mediaDefinitions"');
         if (startIndex !== -1) {
@@ -504,18 +508,24 @@ function extractFlashvarsFromHtml(html) {
 
 function regenerateFlashvarsByReload(url) {
 	try {
+        // Parche 9.7: Forzamos la obtención de una nueva cookie ANTES de intentar recargar la página.
+        // Esto evita que el servidor CDN reconozca nuestra sesión como 'quemada'.
+        log("Iniciando purga de sesión para reinicio en frío...");
+        refreshSession();
+        bridge.sleep(500); // Retraso obligatorio para que las cookies asienten
+
 		const reloadUrl = url + (url.includes("?") ? "&" : "?") + "_cb=" + Date.now();
-		log("Regenerando flashvars recargando la página del video: " + reloadUrl);
+		log("Regenerando flashvars recargando la página con token fresco: " + reloadUrl);
 		const html = httpGET(reloadUrl, { retries: 1 });
 		const flashvars = extractFlashvarsFromHtml(html);
 		if (flashvars && Array.isArray(flashvars.mediaDefinitions) && flashvars.mediaDefinitions.length > 0) {
-			log("Flashvars regenerados con " + flashvars.mediaDefinitions.length + " definiciones.");
+			log("Flashvars regenerados con éxito.");
 			return flashvars;
 		}
-		log("No se obtuvieron mediaDefinitions tras recargar la página del video.");
+		log("No se obtuvieron definiciones tras recarga.");
 		return flashvars;
 	} catch (e) {
-		log("Error regenerando flashvars: " + e);
+		log("Error crítico en regeneración de flashvars: " + e);
 		return null;
 	}
 }
@@ -532,29 +542,31 @@ function loadPlaybackPage(url) {
 			const html = httpGET(pageUrl, {});
 			let flashvars = extractFlashvarsFromHtml(html);
 			if (!flashvars || !Array.isArray(flashvars.mediaDefinitions) || flashvars.mediaDefinitions.length === 0) {
-				log("No se encontraron mediaDefinitions; intentando recarga para regenerar flashvars.");
+				log("MediaDefinitions ausentes; intentando recarga.");
 				const fresh = regenerateFlashvarsByReload(url);
 				if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
 					flashvars = fresh;
 				} else {
 					if (pageAttempt < 3) {
-						bridge.sleep(1200);
+						bridge.sleep(1500);
 						continue;
 					}
-					throw new ScriptException("El reproductor de video no está disponible en esta página.");
+					throw new ScriptException("Reproductor inalcanzable tras recargas.");
 				}
 			}
 
 			const definitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
 			if (!definitions.length) {
 				if (pageAttempt < 3) {
-					bridge.sleep(1200);
+					bridge.sleep(1500);
 					continue;
 				}
-				throw new ScriptException("El video no tiene enlaces de reproducción compatibles o es exclusivo Premium.");
+				throw new ScriptException("Enlaces de reproducción vacíos (PosiblePremium).");
 			}
 
 			const orderedDefinitions = buildPlaybackProbeOrder(definitions);
+            let successFound = false;
+
 			for (let probeAttempt = 0; probeAttempt < 5; probeAttempt++) {
 				let changedAfterRegeneration = false;
 				for (let i = 0; i < orderedDefinitions.length; i++) {
@@ -565,53 +577,62 @@ function loadPlaybackPage(url) {
 					];
 					for (const probeUrl of probeUrls) {
 						try {
-							log("Playback probe: " + probeUrl + " (quality=" + def.quality + ", format=" + def.format + ")");
+							log("Playback probe: " + probeUrl.substring(0, 50) + "... (quality=" + def.quality + ", format=" + def.format + ")");
 							const response = http.GET(probeUrl, playbackHeaders(url));
 							updateCookies(response);
 							if (response.isOk) {
 								finalHtml = html;
 								finalFlashvars = flashvars;
 								finalDefinitions = orderedDefinitions;
+                                successFound = true;
 								return { html: finalHtml, flashvars: finalFlashvars, definitions: finalDefinitions };
 							}
 							lastCode = response.code;
-							log("Sonda CDN rechazada con código HTTP: " + lastCode + ". URL: " + probeUrl);
+							log("Sonda rechazada: HTTP " + lastCode);
 							if (lastCode === 410 || lastCode === 401 || lastCode === 403) {
+                                // Parche 9.7: Aumentamos el retraso antes de bombardear el servidor
+                                bridge.sleep(2000); 
 								const fresh = regenerateFlashvarsByReload(url);
 								if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
 									flashvars = fresh;
 									changedAfterRegeneration = true;
-									break;
+									break; // Romper el loop de URLs de sonda
 								}
 							}
 						} catch (e) {
-							log("Error probando URL de reproducción: " + e);
+							log("Error en petición de sonda: " + e);
 						}
 					}
-					if (changedAfterRegeneration) break;
+					if (changedAfterRegeneration || successFound) break;
 				}
 				if (changedAfterRegeneration) {
 					const regeneratedDefinitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
 					if (regeneratedDefinitions.length > 0) {
 						const regenOrdered = buildPlaybackProbeOrder(regeneratedDefinitions);
+                        orderedDefinitions.length = 0; // Limpiar el array original
 						for (let j = 0; j < regenOrdered.length; j++) {
-							orderedDefinitions[j] = regenOrdered[j];
+							orderedDefinitions.push(regenOrdered[j]);
 						}
 					}
-					break;
+                    // IMPORTANTE: Al salir aquí, el for principal (probeAttempt) continúa,
+                    // intentando ahora sondear con las URL regeneradas.
+					continue; 
 				}
-				bridge.sleep(1000 + probeAttempt * 500);
+                if(successFound) break;
+				bridge.sleep(1500 + probeAttempt * 500);
 			}
-			try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
-			if (pageAttempt < 3) bridge.sleep(1500);
+            if(successFound) return { html: finalHtml, flashvars: finalFlashvars, definitions: finalDefinitions };
+            
+			try { refreshSession(); } catch (e) {}
+			if (pageAttempt < 3) bridge.sleep(2000);
 		} catch (e) {
-			log("Error cargando la página de playback: " + e);
-			try { refreshSession(); } catch (e2) { log("refreshSession() falló: " + e2); }
-			if (pageAttempt < 3) bridge.sleep(1500);
+			log("Error cargando la página base: " + e);
+			try { refreshSession(); } catch (e2) {}
+			if (pageAttempt < 3) bridge.sleep(2000);
 		}
 	}
 
-	throw new ScriptException("The streaming server could not provide a valid playlist (HTTP " + (lastCode || "unknown") + "). Please try again.");
+	throw new ScriptException(`El servidor de streaming rechazó el acceso (HTTP ${lastCode || "desconocido"}). Token inválido.`);
 }
 
 source.getContentDetails = function (url) {
@@ -1024,7 +1045,7 @@ function httpGET(url, options = {}) {
 					if (attempts > 1) {
 						try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
 						attempts--;
-						bridge.sleep(1000);
+						bridge.sleep(1500); // Parche 9.7: Mayor backoff para red
 						continue;
 					}
 					throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
@@ -1068,7 +1089,7 @@ function httpGET(url, options = {}) {
 				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token") || error.toString().includes("challenge") || error.toString().includes("410")) {
 					try { refreshSession(); } catch (e) {}
 				}
-				bridge.sleep(1000);
+				bridge.sleep(1500); // Parche 9.7
 				continue;
 			}
 			throw lastError;
@@ -1820,4 +1841,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-log("Pornhub Script Final v9.6 - Blindajes Quirúrgicos Aplicados");
+log("Pornhub Script Final v9.7 - Cold Start Restored");
