@@ -108,7 +108,7 @@ function extractThumbnail(liNode) {
     }
 
     const html = liNode.innerHTML || "";
-    const regexMatch = html.match(/(?:data-image|data-src|data-thumb_url|src)=["']([^"']*\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
+    const regexMatch = html.match(/(?:data-image|data-src|data-thumb_url|src)=['"]([^'\"]*\.(?:jpg|jpeg|png|webp)[^'"]*)['"]/i);
     if (regexMatch && regexMatch[1] && !regexMatch[1].includes("1x1.gif") && !regexMatch[1].startsWith("data:image/")) {
         return absolutePlatformUrl(regexMatch[1].replace(/&amp;/g, "&"));
     }
@@ -318,13 +318,6 @@ function playlistIdFromUrl(url) {
 	return queryMatch ? queryMatch[1] : "";
 }
 
-function absolutePlatformUrl(url) {
-	if (!url) return "";
-	if (url.startsWith("//")) return "https:" + url;
-	if (/^https?:\/\//i.test(url)) return normalizePornhubUrl(url);
-	return URL_BASE + (url.startsWith("/") ? url : "/" + url);
-}
-
 function playlistVideoFromParsed(video) {
 	var authorInfo = video.authorInfo || {};
 	var authorName = authorInfo.authorName || "";
@@ -411,81 +404,192 @@ function playbackHeaders(url) {
 	};
 }
 
-function extractFlashvarsFromHtml(html) {
-    try {
-        const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
-        if (match && match[1]) {
-            const parsed = JSON.parse(match[1]);
-            if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
-        }
-    } catch (e) { log("[Parse] Fallo en regex estándar de flashvars: " + e); }
-
-    log("[Parse] Iniciando extracción defensiva secundaria para mediaDefinitions...");
-    try {
-        const regexDef = /"mediaDefinitions"\s*:\s*(\[.*?\])\s*(?:,"video_urls"|,"isHLS"|,"video_title"|\})/s;
-        const matchDef = html.match(regexDef);
-        if (matchDef && matchDef[1]) {
-            const parsedDefs = JSON.parse(matchDef[1]);
-            if (Array.isArray(parsedDefs)) {
-                return { mediaDefinitions: parsedDefs };
-            }
-        }
-    } catch (e) { log("[Parse] Fallo crítico en regex secundario: " + e); }
-    
-    return null;
+function normalizeMediaDefinition(definition) {
+	if (!definition || typeof definition !== "object") return null;
+	if (typeof definition.quality === "object") return null;
+	if (!supportedResolutions[definition.quality]) return null;
+	if (typeof definition.videoUrl !== "string") return null;
+	if (!/^https?:\/\//i.test(definition.videoUrl)) return null;
+	return definition;
 }
 
-function loadPlaybackPage(baseUrl) {
-    let maxAttempts = 3;
-    let lastError = null;
+function buildPlaybackProbeOrder(definitions) {
+	const cleaned = [];
+	const seen = {};
+	for (const def of definitions) {
+		const normalized = normalizeMediaDefinition(def);
+		if (!normalized) continue;
+		const key = `${normalized.format || ""}|${normalized.quality || ""}|${normalized.videoUrl || ""}`;
+		if (seen[key]) continue;
+		seen[key] = true;
+		cleaned.push(normalized);
+	}
+	cleaned.sort((a, b) => {
+		const aPriority = (a.format === "hls" ? 10 : 1) + (a.defaultQuality ? 5 : 0) + (Number(a.quality) || 0);
+		const bPriority = (b.format === "hls" ? 10 : 1) + (b.defaultQuality ? 5 : 0) + (Number(b.quality) || 0);
+		return bPriority - aPriority;
+	});
+	const ordered = [];
+	const preferred = [
+		(d => d.format === "hls" && d.quality === "1080"),
+		(d => d.format === "hls" && d.defaultQuality === true),
+		(d => d.format === "hls"),
+		(d => d.format === "mp4" && d.quality === "1080"),
+		(d => d.format === "mp4" && d.defaultQuality === true),
+		(d => d.format === "mp4")
+	];
+	for (const matcher of preferred) {
+		for (const def of cleaned) {
+			if (matcher(def) && !ordered.includes(def)) ordered.push(def);
+		}
+	}
+	for (const def of cleaned) if (!ordered.includes(def)) ordered.push(def);
+	return ordered;
+}
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const cacheBuster = attempt > 0 ? (baseUrl.includes("?") ? `&_cb=${Date.now()}${attempt}` : `?_cb=${Date.now()}${attempt}`) : "";
-        const pageUrl = baseUrl + cacheBuster;
-        
-        try {
-            log(`[Playback] Recuperando HTML (Intento ${attempt + 1}): ${pageUrl}`);
-            const html = httpGET(pageUrl, {});
-            
-            const flashvars = extractFlashvarsFromHtml(html);
-            if (!flashvars || !Array.isArray(flashvars.mediaDefinitions)) {
-                throw new ScriptException("Bloque mediaDefinitions ausente o estructura corrupta.");
-            }
-            
-            const definitions = flashvars.mediaDefinitions.filter(def =>
-                def && typeof def.quality !== "object" && supportedResolutions[def.quality] &&
-                typeof def.videoUrl === "string" && def.videoUrl.startsWith("https://")
-            );
-                
-            if (definitions.length === 0) {
-                throw new ScriptException("Sin enlaces compatibles. Posible restricción Premium.");
-            }
+function extractFlashvarsFromHtml(html) {
+	if (!html || typeof html !== "string") return null;
+	const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
+	if (match) {
+		try {
+			const parsed = JSON.parse(match[1]);
+			if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
+			return parsed;
+		} catch (e) {
+			log("Flashvars JSON parse error: " + e);
+		}
+	}
+	const mediaMatch = html.match(/"mediaDefinitions"\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/m) || html.match(/mediaDefinitions\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/m);
+	if (mediaMatch) {
+		try {
+			const defs = JSON.parse(mediaMatch[1]);
+			if (Array.isArray(defs)) return { mediaDefinitions: defs };
+		} catch (e) {
+			log("Flashvars mediaDefinitions parse error: " + e);
+		}
+	}
+	const attrMatch = html.match(/data-player-config=['"]({[\s\S]+?})['"]/);
+	if (attrMatch) {
+		try {
+			const parsed = JSON.parse(attrMatch[1]);
+			if (parsed) return parsed;
+		} catch (e) {
+			log("Flashvars attribute parse error: " + e);
+		}
+	}
+	return null;
+}
 
-            const probeDef = definitions.find(d => d.format === "hls") || definitions[0];
-            const probeHeaders = playbackHeaders(baseUrl);
-            
-            try {
-                log(`[Sonda] Validando token del CDN para calidad ${probeDef.quality}p...`);
-                httpGET(probeDef.videoUrl, { headers: probeHeaders, emptyOnNotFound: false });
-            } catch(probeError) {
-                if (probeError.message && probeError.message.includes("TOKEN_EXPIRED")) {
-                    log("[Playback] Rechazo detectado en el CDN. Desmontando caché y forzando regeneración de URLs.");
-                    bridge.sleep(1000);
-                    continue; 
-                }
-                throw probeError; 
-            }
+function regenerateFlashvarsByReload(url) {
+	try {
+		const reloadUrl = url + (url.includes("?") ? "&" : "?") + "_cb=" + Date.now();
+		log("Regenerando flashvars recargando la página del video: " + reloadUrl);
+		const html = httpGET(reloadUrl, { retries: 1 });
+		const flashvars = extractFlashvarsFromHtml(html);
+		if (flashvars && Array.isArray(flashvars.mediaDefinitions) && flashvars.mediaDefinitions.length > 0) {
+			log("Flashvars regenerados con " + flashvars.mediaDefinitions.length + " definiciones.");
+			return flashvars;
+		}
+		log("No se obtuvieron mediaDefinitions tras recargar la página del video.");
+		return flashvars;
+	} catch (e) {
+		log("Error regenerando flashvars: " + e);
+		return null;
+	}
+}
 
-            log(`[Playback] Autorización de CDN exitosa. Retornando ${definitions.length} calidades.`);
-            return { html, flashvars, definitions };
-            
-        } catch(e) {
-            lastError = e;
-            log(`[Playback] Fallo de carga (Intento ${attempt + 1}): ${e.message || e}`);
-            bridge.sleep(1500); 
-        }
-    }
-    throw new ScriptException("Servidor de video inaccesible tras 3 intentos. Razón: " + lastError);
+function loadPlaybackPage(url) {
+	let lastCode = null;
+	let finalHtml = "";
+	let finalFlashvars = null;
+	let finalDefinitions = [];
+
+	for (let pageAttempt = 0; pageAttempt < 4; pageAttempt++) {
+		const pageUrl = pageAttempt === 0 ? url : url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + pageAttempt;
+		try {
+			const html = httpGET(pageUrl, {});
+			let flashvars = extractFlashvarsFromHtml(html);
+			if (!flashvars || !Array.isArray(flashvars.mediaDefinitions) || flashvars.mediaDefinitions.length === 0) {
+				log("No se encontraron mediaDefinitions; intentando recarga para regenerar flashvars.");
+				const fresh = regenerateFlashvarsByReload(url);
+				if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
+					flashvars = fresh;
+				} else {
+					if (pageAttempt < 3) {
+						bridge.sleep(1200);
+						continue;
+					}
+					throw new ScriptException("El reproductor de video no está disponible en esta página.");
+				}
+			}
+
+			const definitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
+			if (!definitions.length) {
+				if (pageAttempt < 3) {
+					bridge.sleep(1200);
+					continue;
+				}
+				throw new ScriptException("El video no tiene enlaces de reproducción compatibles o es exclusivo Premium.");
+			}
+
+			const orderedDefinitions = buildPlaybackProbeOrder(definitions);
+			for (let probeAttempt = 0; probeAttempt < 5; probeAttempt++) {
+				let changedAfterRegeneration = false;
+				for (let i = 0; i < orderedDefinitions.length; i++) {
+					const def = orderedDefinitions[i];
+					const probeUrls = [
+						def.videoUrl,
+						def.videoUrl + (def.videoUrl.includes("?") ? "&" : "?") + "_=" + Date.now() + i + probeAttempt
+					];
+					for (const probeUrl of probeUrls) {
+						try {
+							log("Playback probe: " + probeUrl + " (quality=" + def.quality + ", format=" + def.format + ")");
+							const response = http.GET(probeUrl, playbackHeaders(url));
+							updateCookies(response);
+							if (response.isOk) {
+								finalHtml = html;
+								finalFlashvars = flashvars;
+								finalDefinitions = orderedDefinitions;
+								return { html: finalHtml, flashvars: finalFlashvars, definitions: finalDefinitions };
+							}
+							lastCode = response.code;
+							log("Sonda CDN rechazada con código HTTP: " + lastCode + ". URL: " + probeUrl);
+							if (lastCode === 410 || lastCode === 401 || lastCode === 403) {
+								const fresh = regenerateFlashvarsByReload(url);
+								if (fresh && Array.isArray(fresh.mediaDefinitions) && fresh.mediaDefinitions.length > 0) {
+									flashvars = fresh;
+									changedAfterRegeneration = true;
+									break;
+								}
+							}
+						} catch (e) {
+							log("Error probando URL de reproducción: " + e);
+						}
+					}
+					if (changedAfterRegeneration) break;
+				}
+				if (changedAfterRegeneration) {
+					const regeneratedDefinitions = (flashvars.mediaDefinitions || []).filter(def => normalizeMediaDefinition(def));
+					if (regeneratedDefinitions.length > 0) {
+						const regenOrdered = buildPlaybackProbeOrder(regeneratedDefinitions);
+						for (let j = 0; j < regenOrdered.length; j++) {
+							orderedDefinitions[j] = regenOrdered[j];
+						}
+					}
+					break;
+				}
+				bridge.sleep(1000 + probeAttempt * 500);
+			}
+			try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
+			if (pageAttempt < 3) bridge.sleep(1500);
+		} catch (e) {
+			log("Error cargando la página de playback: " + e);
+			try { refreshSession(); } catch (e2) { log("refreshSession() falló: " + e2); }
+			if (pageAttempt < 3) bridge.sleep(1500);
+		}
+	}
+
+	throw new ScriptException("The streaming server could not provide a valid playlist (HTTP " + (lastCode || "unknown") + "). Please try again.");
 }
 
 source.getContentDetails = function (url) {
@@ -495,19 +599,21 @@ source.getContentDetails = function (url) {
 	var mediaDefinitions = page.definitions;
 	var sources = [];
 
-    mediaDefinitions.sort((a, b) => parseInt(b.quality) - parseInt(a.quality));
+	let has1080 = mediaDefinitions.some(d => d.quality === "1080");
+	let has720 = mediaDefinitions.some(d => d.quality === "720");
+	let forcedDefault = has1080 ? "1080" : (has720 ? "720" : null);
 
 	for (const def of mediaDefinitions) {
 		var resolution = supportedResolutions[def.quality];
 		if (!resolution) continue;
 		
-		let isDefault = def.defaultQuality === true;
+		let isDefault = forcedDefault ? (def.quality === forcedDefault) : (def.defaultQuality === true);
 		
 		if (def.format === "hls") {
 			sources.push(new HLSSource({
 				name: `${resolution.width}x${resolution.height} (Auto)`,
 				url: def.videoUrl,
-				duration: flashvars.video_duration || 0,
+				duration: flashvars.video_duration ?? 0,
 				priority: isDefault,
 				requestModifier: { headers: playbackHeaders(url) }
 			}));
@@ -517,7 +623,7 @@ source.getContentDetails = function (url) {
 				url: def.videoUrl,
 				width: resolution.width,
 				height: resolution.height,
-				duration: flashvars.video_duration || 0,
+				duration: flashvars.video_duration ?? 0,
 				container: "mp4",
 				priority: isDefault,
 				requestModifier: { headers: playbackHeaders(url) }
@@ -535,52 +641,46 @@ source.getContentDetails = function (url) {
 	}
 
 	var dom = domParser.parseFromString(html);
-	
-	let description = "";
-	let uploadDate = 0;
-	let views = 0;
+	var ldJson = {};
 	try {
-	    let ldJsonNode = dom.querySelector('script[type="application/ld+json"]');
-	    if (ldJsonNode) {
-	        var ldJson = JSON.parse(ldJsonNode.textContent);
-	        description = ldJson.description || "";
-	        if (ldJson.uploadDate) uploadDate = Math.round((new Date(ldJson.uploadDate)).getTime() / 1000);
-	        views = interactionCountFromLdJson(ldJson);
-	    }
-	} catch(e) { log("[ParseError] LdJson ausente o corrupto: " + e); }
-
-	var userAvatarNode = dom.querySelector(".userAvatar img");
-	var userAvatar = userAvatarNode ? userAvatarNode.getAttribute("src") : "";
-	
-	var userInfoNode = dom.querySelector(".userInfo");
-	var channelUrlId = "unknown";
-	var displayName = "Desconocido";
-	var channelUrl = "";
-	var subscribersStr = "0";
-	
-	if (userInfoNode) {
-	    var aNode = userInfoNode.querySelector("div.usernameWrap a");
-	    if (aNode) {
-	        let href = aNode.getAttribute("href");
-	        if (href) {
-	            channelUrlId = href.split('/').pop();
-	            channelUrl = URL_BASE + href;
-	        }
-	        displayName = aNode.textContent.trim();
-	    }
-	    
-    	var infoSpans = userInfoNode.querySelectorAll("span");
-    	for (var i = 0; i < infoSpans.length; i++) {
-    		var spanText = infoSpans[i].textContent.trim();
-    		if (spanText.includes("Subscriber")) {
-    			subscribersStr = spanText;
-    			break;
-    		}
-    	}
+		var scriptNode = dom.querySelector('script[type="application/ld+json"]');
+		if (scriptNode && scriptNode.text) ldJson = JSON.parse(scriptNode.text);
+	} catch (e) {
+		log("No se pudo parsear application/ld+json: " + e);
 	}
-	
+	var description = ldJson.description || "";
+	var userAvatar = "";
+	var userInfoNode = null;
+	var userAvatarNode = dom.getElementsByClassName("userAvatar")[0];
+	if (userAvatarNode) {
+		var avatarImg = userAvatarNode.querySelector("img");
+		if (avatarImg) userAvatar = avatarImg.getAttribute("src") || "";
+	}
+	userInfoNode = dom.getElementsByClassName("userInfo")[0] || null;
+	var channelUrlId = "";
+	if (userInfoNode) {
+		var usernameLink = userInfoNode.querySelector("div.usernameWrap a");
+		if (usernameLink && usernameLink.getAttribute("href")) {
+			channelUrlId = usernameLink.getAttribute("href").split('/').pop();
+		}
+	}
+
+	var subscribersStr = "0";
+	if (userInfoNode) {
+		var infoSpans = userInfoNode.querySelectorAll("span");
+		for (var i = 0; i < infoSpans.length; i++) {
+			var spanText = infoSpans[i].textContent.trim();
+			if (spanText.includes("Subscriber")) {
+				subscribersStr = spanText;
+				break;
+			}
+		}
+	}
 	var subscribers = parseStringWithKorMSuffixes(subscribersStr);
-	var videoId = (flashvars.playbackTracking && flashvars.playbackTracking.video_id) ? flashvars.playbackTracking.video_id.toString() : url.split("viewkey=").pop();
+	var displayName = userInfoNode && userInfoNode.querySelector("a") ? userInfoNode.querySelector("a").text : "Unknown";
+	var channelUrl = (userInfoNode && userInfoNode.querySelector("a") && userInfoNode.querySelector("a").getAttribute("href")) ? URL_BASE + userInfoNode.querySelector("a").getAttribute("href") : URL_BASE + "/";
+	var views = interactionCountFromLdJson(ldJson);
+	var videoId = (flashvars.playbackTracking && flashvars.playbackTracking.video_id) ? flashvars.playbackTracking.video_id.toString() : (flashvars.video_id || "0");
 
     var likes = 0;
     var dislikes = 0;
@@ -591,13 +691,13 @@ source.getContentDetails = function (url) {
 
 	const details = new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, videoId, config.id),
-		name: flashvars.video_title || (dom.querySelector("h1.title") ? dom.querySelector("h1.title").textContent.trim() : "Video"),
+		name: flashvars.video_title || "Porn video",
 		thumbnails: new Thumbnails([new Thumbnail(flashvars.image_url || "", 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, channelUrlId, config.id), displayName, channelUrl, userAvatar ?? "", subscribers ?? 0),
-		datetime: uploadDate,
+		author: new PlatformAuthorLink(new PlatformID(PLATFORM, channelUrlId || displayName, config.id), displayName, channelUrl, userAvatar ?? "", subscribers ?? 0),
+		datetime: Math.round((new Date(ldJson.uploadDate || Date.now())).getTime() / 1000),
 		duration: flashvars.video_duration || 0,
 		viewCount: views,
-		url: (flashvars.link_url) ? flashvars.link_url : url,
+		url: flashvars.link_url || url,
 		isLive: false,
 		description: description,
 		video: new VideoSourceDescriptor(sources),
@@ -888,26 +988,23 @@ function httpGET(url, options = {}) {
 			updateCookies(resp);
 
 			if (resp.code === 404 && options.emptyOnNotFound === true) return null;
-            
-            if (resp.code === 401 || resp.code === 403 || resp.code === 410) {
-                let serverStr = (resp.headers && resp.headers["Server"]) ? resp.headers["Server"] : "Desconocido";
-                log(`[Red] HTTP ${resp.code} interceptado en: ${url} (Servidor: ${serverStr})`);
-                
-                if (resp.code === 410 || url.includes(".m3u8") || url.includes("phprcdn") || url.includes("token=")) {
-                    log("[Red] Token revocado explícitamente por el CDN. Emitiendo señal de expiración.");
-                    throw new ScriptException("TOKEN_EXPIRED");
-                }
-                
-                try { refreshSession(); } catch (e) {}
-                throw new ScriptException(`Acceso bloqueado en servidor base (HTTP ${resp.code})`);
-            } else if (!resp.isOk) {
+			var body = resp.body || "";
+
+			if (!resp.isOk) {
+				if (resp.code === 401 || resp.code === 403 || resp.code === 410) {
+					log("httpGET: recibió " + resp.code + " para " + url + ". Forzando refreshSession y reintento.");
+					if (attempts > 1) {
+						try { refreshSession(); } catch (e) { log("refreshSession() falló: " + e); }
+						attempts--;
+						bridge.sleep(1000);
+						continue;
+					}
+					throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+				}
 				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
 			}
 
-			var body = resp.body || "";
-
 			if (isBotChallenge(body)) {
-                log("[Antibot] Captcha detectado. Resolviendo algoritmo localmente...");
 				var keyCookieValue = solveBotChallenge(body);
 				if (!keyCookieValue) throw new ScriptException("Failed to solve bot challenge");
 				
@@ -940,7 +1037,10 @@ function httpGET(url, options = {}) {
 			lastError = error;
 			attempts--;
 			if (attempts > 0) {
-				bridge.sleep(1500);
+				if (error.toString().includes("401") || error.toString().includes("403") || error.toString().includes("session") || error.toString().includes("token") || error.toString().includes("challenge") || error.toString().includes("410")) {
+					try { refreshSession(); } catch (e) {}
+				}
+				bridge.sleep(1000);
 				continue;
 			}
 			throw lastError;
@@ -1681,4 +1781,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-log("Pornhub Script Final v12 - Surgical Optimization Loaded");
+log("Pornhub Script Final v9.4 - Restored Resilient Architecture");
