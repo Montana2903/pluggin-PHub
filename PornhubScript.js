@@ -449,34 +449,56 @@ function buildPlaybackProbeOrder(definitions) {
 
 function extractFlashvarsFromHtml(html) {
 	if (!html || typeof html !== "string") return null;
-	const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
-	if (match) {
-		try {
-			const parsed = JSON.parse(match[1]);
-			if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
-			return parsed;
-		} catch (e) {
-			log("Flashvars JSON parse error: " + e);
-		}
-	}
-	const mediaMatch = html.match(/"mediaDefinitions"\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/m) || html.match(/mediaDefinitions\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/m);
-	if (mediaMatch) {
-		try {
-			const defs = JSON.parse(mediaMatch[1]);
-			if (Array.isArray(defs)) return { mediaDefinitions: defs };
-		} catch (e) {
-			log("Flashvars mediaDefinitions parse error: " + e);
-		}
-	}
-	const attrMatch = html.match(/data-player-config=['"]({[\s\S]+?})['"]/);
-	if (attrMatch) {
-		try {
-			const parsed = JSON.parse(attrMatch[1]);
-			if (parsed) return parsed;
-		} catch (e) {
-			log("Flashvars attribute parse error: " + e);
-		}
-	}
+    
+    // Intento 1: Regex estándar para bloque JSON entero
+    try {
+        const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
+        if (match && match[1]) {
+            const parsed = JSON.parse(match[1]);
+            if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
+        }
+    } catch (e) { log("Flashvars JSON parse error: " + e); }
+    
+    // Intento 2: Búsqueda quirúrgica sin regex peligrosos (Bracket matching) validada
+    try {
+        const startIndex = html.indexOf('"mediaDefinitions"');
+        if (startIndex !== -1) {
+            const arrayStart = html.indexOf('[', startIndex);
+            if (arrayStart !== -1) {
+                const inBetween = html.substring(startIndex + 18, arrayStart).trim();
+                if (inBetween === ":" || inBetween === '":' || inBetween === '') {
+                    let bracketCount = 0;
+                    let arrayEnd = -1;
+                    let inString = false;
+                    let escapeNext = false;
+                    
+                    for (let i = arrayStart; i < html.length; i++) {
+                        const char = html[i];
+                        if (escapeNext) { escapeNext = false; continue; }
+                        if (char === '\\') { escapeNext = true; continue; }
+                        if (char === '"' && !escapeNext) { inString = !inString; continue; }
+                        if (inString) continue;
+                        
+                        if (char === '[') bracketCount++;
+                        else if (char === ']') {
+                            bracketCount--;
+                            if (bracketCount === 0) {
+                                arrayEnd = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (arrayEnd !== -1) {
+                        const arrayStr = html.substring(arrayStart, arrayEnd);
+                        const parsedArray = JSON.parse(arrayStr);
+                        if (Array.isArray(parsedArray)) return { mediaDefinitions: parsedArray };
+                    }
+                }
+            }
+        }
+    } catch (e) { log("Flashvars bracket parser error: " + e); }
+
 	return null;
 }
 
@@ -944,9 +966,15 @@ function refreshSession() {
 
 function updateCookies(resp) {
 	if (!resp || !resp.headers) return;
-	let setCookies = resp.headers["set-cookie"] || resp.headers["Set-Cookie"];
-	if (!setCookies) return;
-	if (typeof setCookies === 'string') setCookies = [setCookies];
+    let setCookies = [];
+    for (const key in resp.headers) {
+        if (key.toLowerCase() === 'set-cookie') {
+            let val = resp.headers[key];
+            if (Array.isArray(val)) setCookies = setCookies.concat(val);
+            else setCookies.push(val);
+        }
+    }
+	if (setCookies.length === 0) return;
 	
 	let cStr = headers["Cookie"] || "";
 	setCookies.forEach(c => {
@@ -1049,15 +1077,27 @@ function httpGET(url, options = {}) {
 	throw lastError || new ScriptException("Request failed for unknown reason");
 }
 
-function getVideoId(dom) {
-	return dom.querySelector("div#player").getAttribute("data-video-id");
-}
-
 source.getComments = function (url) {
-	var html = httpGET(url, {});
-	var dom = domParser.parseFromString(html);
-	var videoId = getVideoId(dom);
-	return getCommentPager(`/comment/show?id=${videoId}&popular=0&what=video&token=${state.token}`, {}, 1);
+    let videoId = "";
+    try {
+        const match = url.match(/viewkey=([^&]+)/);
+        if (match && match[1]) videoId = match[1];
+    } catch (e) {}
+
+    if (!videoId) {
+        try {
+            var html = httpGET(url, {});
+            var dom = domParser.parseFromString(html);
+            var player = dom.querySelector("div#player") || dom.querySelector("[data-video-id]");
+            if (player) videoId = player.getAttribute("data-video-id");
+        } catch (e) { log("Error obteniendo videoId para comentarios: " + e); }
+    }
+
+    if (!videoId) return new CommentPager([], false);
+    if (!state.token) {
+        try { refreshSession(); } catch(e) {}
+    }
+    return getCommentPager(`/comment/show?id=${videoId}&popular=0&what=video&token=${state.token}`, {}, 1);
 }
 
 source.getSubComments = function (comment) {
@@ -1170,21 +1210,18 @@ function extractPlatformName(url, label) {
 
 function parseRelativeDate(relativeDate) {
     const now = new Date();
-    const lowerCaseRelativeDate = relativeDate.toLowerCase();
-    if (lowerCaseRelativeDate.includes('1 second ago')) return new Date(now - 1000);
-    else if (lowerCaseRelativeDate.includes('1 minute ago')) return new Date(now - 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('1 hour ago')) return new Date(now - 60 * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('1 day ago') || lowerCaseRelativeDate.includes('yesterday')) return new Date(now - 24 * 60 * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('1 week ago')) return new Date(now - 7 * 24 * 60 * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('1 month ago')) { const oneMonthAgo = new Date(now); oneMonthAgo.setMonth(now.getMonth() - 1); return oneMonthAgo; }
-    else if (lowerCaseRelativeDate.includes('1 year ago')) { const oneYearAgo = new Date(now); oneYearAgo.setFullYear(now.getFullYear() - 1); return oneYearAgo; }
-    else if (lowerCaseRelativeDate.includes('seconds ago')) return new Date(now - parseInt(lowerCaseRelativeDate) * 1000);
-    else if (lowerCaseRelativeDate.includes('minutes ago')) return new Date(now - parseInt(lowerCaseRelativeDate) * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('hours ago')) return new Date(now - parseInt(lowerCaseRelativeDate) * 60 * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('days ago')) return new Date(now - parseInt(lowerCaseRelativeDate) * 24 * 60 * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('weeks ago')) return new Date(now - parseInt(lowerCaseRelativeDate) * 7 * 24 * 60 * 60 * 1000);
-    else if (lowerCaseRelativeDate.includes('months ago')) { const oneMonthAgo = new Date(now); oneMonthAgo.setMonth(now.getMonth() - parseInt(lowerCaseRelativeDate)); return oneMonthAgo; }
-    else if (lowerCaseRelativeDate.includes('years ago')) { const oneYearAgo = new Date(now); oneYearAgo.setFullYear(now.getFullYear() - parseInt(lowerCaseRelativeDate)); return oneYearAgo; }
+    const str = relativeDate.toLowerCase();
+    const numMatch = str.match(/\d+/);
+    const num = numMatch ? parseInt(numMatch[0]) : 1;
+
+    if (str.includes('segundo') || str.includes('second')) return new Date(now - num * 1000);
+    if (str.includes('minuto') || str.includes('minute')) return new Date(now - num * 60 * 1000);
+    if (str.includes('hora') || str.includes('hour')) return new Date(now - num * 60 * 60 * 1000);
+    if (str.includes('día') || str.includes('dia') || str.includes('day') || str.includes('ayer') || str.includes('yesterday')) return new Date(now - num * 24 * 60 * 60 * 1000);
+    if (str.includes('semana') || str.includes('week')) return new Date(now - num * 7 * 24 * 60 * 60 * 1000);
+    if (str.includes('mes') || str.includes('month')) { const d = new Date(now); d.setMonth(now.getMonth() - num); return d; }
+    if (str.includes('año') || str.includes('year')) { const d = new Date(now); d.setFullYear(now.getFullYear() - num); return d; }
+    
     return new Date(0);
 }
 
@@ -1429,7 +1466,7 @@ function getChannels(html) {
 			var avatar = li.querySelector("div.avatar a.usernameLink img").getAttribute("src");
 			var displayName = li.querySelector("div.descriptionContainer li a.usernameLink").textContent.trim()
 			var url = li.querySelector("div.descriptionContainer li a.usernameLink").getAttribute("href");
-			var subscribers = parseInt(li.querySelector("div.descriptionContainer li span").textContent.trim().replace(/\,/, ""));
+			var subscribers = parseInt(li.querySelector("div.descriptionContainer li span").textContent.trim().replace(/,/, ""));
 			var name = url.split("/")[1];
 			resultArray.push({ subscribers: subscribers, name: name, url: url, displayName: displayName, avatar: avatar });
 	});
@@ -1735,8 +1772,10 @@ function getVideos(html, ulId) {
 	if (pagingIndicationElement !== undefined && pagingIndicationElement !== null) {
 		var pagingIndication = pagingIndicationElement.textContent.trim();
 		if (pagingIndication && typeof pagingIndication === 'string') {
-			var indexOfTotalStr = pagingIndication.indexOf("of ");
-			if (indexOfTotalStr !== -1) total = parseInt(pagingIndication.substring(indexOfTotalStr + 3), 10);
+			var totalMatch = pagingIndication.match(/(?:de|of)\s+([0-9,]+)/i);
+			if (totalMatch && totalMatch[1]) {
+			    total = parseInt(totalMatch[1].replace(/,/g, ''), 10);
+			}
 		}
 	}
 
@@ -1781,4 +1820,4 @@ function getVideos(html, ulId) {
 	return { totalElemsPages: undefined, hasNextPage: hasNextPage, videos: resultArray };
 }
 
-log("Pornhub Script Final v9.4 - Restored Resilient Architecture");
+log("Pornhub Script Final v9.6 - Blindajes Quirúrgicos Aplicados");
