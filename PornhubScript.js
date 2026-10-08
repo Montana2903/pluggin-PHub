@@ -606,7 +606,8 @@ function playbackHeaders(url) {
 	return {
 		"Referer": url,
 		"User-Agent": headers["User-Agent"],
-		"Origin": URL_BASE
+		"Origin": URL_BASE,
+		"Cookie": headers["Cookie"]
 	};
 }
 
@@ -622,48 +623,60 @@ function normalizeMediaDefinition(definition) {
 function extractFlashvarsFromHtml(html) {
 	if (!html || typeof html !== "string") return null;
 
-	try {
-		const match = html.match(/var\s+flashvars_\d+\s*=\s*({[\s\S]+?});/);
-		if (match && match[1]) {
+	const patterns = [
+		/(?:var|let|const)\s+flashvars(?:_\d+)?\s*[:=]\s*({[\s\S]*?});/i,
+		/(?:window|var)\s*__INITIAL_STATE__\s*[:=]\s*({[\s\S]*?});?/i,
+		/(?:window|var)\s*INITIAL_STATE\s*[:=]\s*({[\s\S]*?});?/i,
+		/"mediaDefinitions"\s*:\s*(\[[\s\S]*?\])\s*(?:,|\})/i
+	];
+
+	for (let i = 0; i < patterns.length; i++) {
+		const match = html.match(patterns[i]);
+		if (!match || !match[1]) continue;
+		try {
 			const parsed = JSON.parse(match[1]);
 			if (parsed && Array.isArray(parsed.mediaDefinitions)) return parsed;
-		}
-	} catch (e) {}
+			if (parsed && parsed.mediaDefinitions && Array.isArray(parsed.mediaDefinitions)) return parsed;
+			if (parsed && parsed.video && Array.isArray(parsed.video.mediaDefinitions)) return parsed.video;
+			if (parsed && parsed.data && Array.isArray(parsed.data.mediaDefinitions)) return parsed.data;
+			if (parsed && parsed.videos && Array.isArray(parsed.videos)) {
+				const nested = parsed.videos.find(item => item && Array.isArray(item.mediaDefinitions));
+				if (nested) return nested;
+			}
+		} catch (e) {}
+	}
 
 	try {
 		const startIndex = html.indexOf('"mediaDefinitions"');
 		if (startIndex !== -1) {
 			const arrayStart = html.indexOf('[', startIndex);
 			if (arrayStart !== -1) {
-				const inBetween = html.substring(startIndex + 18, arrayStart).trim();
-				if (inBetween === ":" || inBetween === '":' || inBetween === '') {
-					let bracketCount = 0;
-					let arrayEnd = -1;
-					let inString = false;
-					let escapeNext = false;
+				let bracketCount = 0;
+				let arrayEnd = -1;
+				let inString = false;
+				let escapeNext = false;
 
-					for (let i = arrayStart; i < html.length; i++) {
-						const char = html[i];
-						if (escapeNext) { escapeNext = false; continue; }
-						if (char === '\\') { escapeNext = true; continue; }
-						if (char === '"' && !escapeNext) { inString = !inString; continue; }
-						if (inString) continue;
+				for (let i = arrayStart; i < html.length; i++) {
+					const char = html[i];
+					if (escapeNext) { escapeNext = false; continue; }
+					if (char === '\\') { escapeNext = true; continue; }
+					if (char === '"' && !escapeNext) { inString = !inString; continue; }
+					if (inString) continue;
 
-						if (char === '[') bracketCount++;
-						else if (char === ']') {
-							bracketCount--;
-							if (bracketCount === 0) {
-								arrayEnd = i + 1;
-								break;
-							}
+					if (char === '[') bracketCount++;
+					else if (char === ']') {
+						bracketCount--;
+						if (bracketCount === 0) {
+							arrayEnd = i + 1;
+							break;
 						}
 					}
+				}
 
-					if (arrayEnd !== -1) {
-						const arrayStr = html.substring(arrayStart, arrayEnd);
-						const parsedArray = JSON.parse(arrayStr);
-						if (Array.isArray(parsedArray)) return { mediaDefinitions: parsedArray };
-					}
+				if (arrayEnd !== -1) {
+					const arrayStr = html.substring(arrayStart, arrayEnd);
+					const parsedArray = JSON.parse(arrayStr);
+					if (Array.isArray(parsedArray)) return { mediaDefinitions: parsedArray };
 				}
 			}
 		}
@@ -682,17 +695,31 @@ function loadPlaybackPage(url) {
 			throw new ScriptException("El reproductor de video no está disponible en esta página.");
 		}
 
-		const definitions = flashvars.mediaDefinitions.filter(definition =>
-			definition.format === "hls" && typeof definition.defaultQuality === "boolean" &&
-			typeof definition.quality !== "object" && supportedResolutions[definition.quality] &&
-			typeof definition.videoUrl === "string" && definition.videoUrl.startsWith("https://"));
+		const definitions = flashvars.mediaDefinitions
+			.filter(definition => definition && typeof definition === "object")
+			.map(definition => {
+				if (typeof definition.quality === "string") definition.quality = definition.quality.toString();
+				if (typeof definition.videoUrl === "string" && !/^https?:\/\//i.test(definition.videoUrl)) {
+					definition.videoUrl = absolutePlatformUrl(definition.videoUrl);
+				}
+				return definition;
+			})
+			.filter(definition => {
+				if (!definition || typeof definition !== "object") return false;
+				const format = String(definition.format || "").toLowerCase();
+				const quality = String(definition.quality || "");
+				const hasSupportedQuality = !!supportedResolutions[quality];
+				const hasUrl = typeof definition.videoUrl === "string" && definition.videoUrl.length > 0;
+				const isHlsMp4 = format === "hls" || format === "mp4";
+				return isHlsMp4 && hasSupportedQuality && hasUrl;
+			});
 
 		if (!definitions.length) throw new ScriptException("El video no tiene enlaces de reproducción compatibles.");
 
-		const probe = definitions.find(definition => definition.defaultQuality) || definitions[0];
+		const probe = definitions.find(definition => definition.defaultQuality === true || definition.defaultQuality === "true") || definitions[0];
 		const response = http.GET(probe.videoUrl, playbackHeaders(url));
 
-		if (response.isOk && /^\s*#EXTM3U/.test(response.body)) {
+		if (response.isOk && /^\s*#EXTM3U/.test(response.body || "")) {
 			return { html, flashvars, definitions };
 		}
 
@@ -717,7 +744,7 @@ source.getContentDetails = function(url) {
 		var resolution = supportedResolutions[def.quality];
 		if (!resolution) continue;
 
-		let isDefault = forcedDefault ? (def.quality === forcedDefault) : (def.defaultQuality === true);
+		let isDefault = forcedDefault ? (def.quality === forcedDefault) : (def.defaultQuality === true || def.defaultQuality === "true");
 
 		if (def.format === "hls") {
 			sources.push(new HLSSource({
@@ -787,7 +814,7 @@ source.getContentDetails = function(url) {
 	}
 	var subscribers = parseStringWithKorMSuffixes(subscribersStr);
 	var displayName = userInfoNode && userInfoNode.querySelector("a") ? userInfoNode.querySelector("a").text : "Unknown";
-	var channelUrl = (userInfoNode && userInfoNode.querySelector("a") && userInfoNode.querySelector("a").getAttribute("href")) ? URL_BASE + userInfoNode.querySelector("a").getAttribute("href") : URL_BASE + "/";
+	var channelUrl = (userInfoNode && userInfoNode.querySelector("a") && userInfoNode.querySelector("a").getAttribute("href")) ? URL_BASE + userInfoNode.querySelector("a").getAttribute("href") : URL_BASE;
 	var views = interactionCountFromLdJson(ldJson);
 	var videoId = (flashvars.playbackTracking && flashvars.playbackTracking.video_id) ? flashvars.playbackTracking.video_id.toString() : (flashvars.video_id || "0");
 
